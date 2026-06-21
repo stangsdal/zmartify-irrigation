@@ -9,6 +9,9 @@
 #include "flow_manager.h"
 #include "irrigation_engine.h"
 #include "mqtt_topic.h"
+#include "mqtt_transport.h"
+#include "ota_manager.h"
+#include "persistent_store.h"
 #include "pressure_manager.h"
 #include "storage_manager.h"
 #include "weather_manager.h"
@@ -25,12 +28,16 @@ static zic_log_entry_t s_log_buffer[128];
 #define ZIC_EVENT_ENGINE_READY BIT0
 #define ZIC_EVENT_FAULT BIT1
 
+#define ZIC_DEFAULT_BROKER_URI "mqtt://192.168.10.2:1883"
+#define ZIC_DEFAULT_CLIENT_ID "zic-controller-01"
+
 typedef enum {
     ZIC_CMD_START_ZONE = 0,
     ZIC_CMD_STOP_ZONE,
     ZIC_CMD_STOP_ALL,
     ZIC_CMD_SET_RAIN_DELAY,
-    ZIC_CMD_CLEAR_RAIN_DELAY
+    ZIC_CMD_CLEAR_RAIN_DELAY,
+    ZIC_CMD_TRIGGER_OTA
 } zic_runtime_command_type_t;
 
 typedef struct {
@@ -38,6 +45,7 @@ typedef struct {
     uint8_t zone_id;
     uint32_t runtime_seconds;
     uint16_t rain_delay_hours;
+    const char *ota_url;
 } zic_runtime_command_t;
 
 typedef struct {
@@ -50,6 +58,7 @@ typedef struct {
     weather_decision_t weather_decision;
     et_output_t et_output;
     char state_topic[ZIC_MQTT_TOPIC_MAX];
+    mqtt_transport_t mqtt_transport;
 } zic_app_context_t;
 
 static zic_app_context_t s_ctx;
@@ -59,12 +68,17 @@ static SemaphoreHandle_t s_ctx_lock;
 
 static void zic_runtime_init_context(zic_app_context_t *ctx)
 {
+    uint32_t baseline_flow = 1234;
+
+    persistent_store_init();
+    persistent_store_get_u32("flow_baseline", &baseline_flow, 1234);
+
     irrigation_engine_init(&ctx->engine);
     alarm_manager_init(&ctx->alarm_manager);
     flow_manager_init(&ctx->flow_manager);
     pressure_manager_init(&ctx->pressure_manager, 2000, 7000);
     storage_manager_init(&ctx->storage_manager, s_log_buffer, 128);
-    flow_manager_set_baseline(&ctx->flow_manager, 1234);
+    flow_manager_set_baseline(&ctx->flow_manager, baseline_flow);
 
     ctx->weather_snapshot.rain_mm_last_24h = 0.0f;
     ctx->weather_snapshot.rain_probability_pct = 20.0f;
@@ -73,6 +87,16 @@ static void zic_runtime_init_context(zic_app_context_t *ctx)
     ctx->weather_snapshot.temperature_c = 33.0f;
     ctx->weather_snapshot.wind_speed_mps = 3.0f;
     zic_mqtt_topic_build("state", ctx->state_topic, sizeof(ctx->state_topic));
+
+    mqtt_transport_config_t mqtt_cfg = {
+        .broker_uri = ZIC_DEFAULT_BROKER_URI,
+        .client_id = ZIC_DEFAULT_CLIENT_ID,
+        .username = NULL,
+        .password = NULL,
+    };
+    if (mqtt_transport_init(&ctx->mqtt_transport, &mqtt_cfg)) {
+        mqtt_transport_start(&ctx->mqtt_transport);
+    }
 }
 
 static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_command_t *cmd)
@@ -88,12 +112,21 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
         irrigation_engine_stop_all(&ctx->engine);
         break;
     case ZIC_CMD_SET_RAIN_DELAY:
-        (void)cmd->rain_delay_hours;
+        persistent_store_set_u32("rain_delay_h", cmd->rain_delay_hours);
         zic_controller_apply_event(&ctx->engine.controller, ZIC_EV_RAIN_DELAY_SET, -1);
         break;
     case ZIC_CMD_CLEAR_RAIN_DELAY:
+        persistent_store_set_u32("rain_delay_h", 0);
         zic_controller_apply_event(&ctx->engine.controller, ZIC_EV_RAIN_DELAY_CLEAR, -1);
         break;
+    case ZIC_CMD_TRIGGER_OTA: {
+        ota_manager_config_t ota_cfg = {
+            .firmware_url = cmd->ota_url,
+            .cert_pem = NULL,
+        };
+        ota_manager_perform(&ota_cfg);
+        break;
+    }
     default:
         break;
     }
@@ -118,6 +151,7 @@ static void zic_control_task(void *arg)
         flow_manager_update(&s_ctx.flow_manager, 1400, &s_ctx.alarm_manager);
         pressure_manager_update(&s_ctx.pressure_manager, 3500, &s_ctx.alarm_manager);
         storage_manager_append(&s_ctx.storage_manager, 1, ZIC_LOG_IRRIGATION, "heartbeat");
+        persistent_store_set_u32("flow_baseline", s_ctx.flow_manager.baseline_lpm_x100);
         weather_manager_evaluate(&s_ctx.weather_snapshot, &s_ctx.weather_decision);
 
         et_input_t et_input = {
@@ -156,15 +190,24 @@ static void zic_telemetry_task(void *arg)
         }
 
         ESP_LOGI(TAG,
-                 "Telemetry controller_state=%d active_zone=%d alarm_high_flow=%d et_daily=%.2f fault=%d logs=%u first_log=%s publish_topic=%s",
+                 "Telemetry controller_state=%d active_zone=%d alarm_high_flow=%d et_daily=%.2f fault=%d mqtt=%d logs=%u first_log=%s publish_topic=%s",
                  (int)s_ctx.engine.controller.state,
                  (int)s_ctx.engine.controller.active_zone,
                  alarm_manager_is_active(&s_ctx.alarm_manager, ZIC_ALARM_HIGH_FLOW),
                  s_ctx.et_output.daily_et_mm,
                  (bits & ZIC_EVENT_FAULT) != 0,
+                 mqtt_transport_is_connected(&s_ctx.mqtt_transport),
                  (unsigned)storage_manager_count(&s_ctx.storage_manager),
                  csv_line,
                  s_ctx.state_topic);
+
+        if (mqtt_transport_is_connected(&s_ctx.mqtt_transport)) {
+            mqtt_transport_publish(&s_ctx.mqtt_transport,
+                                   s_ctx.state_topic,
+                                   csv_line,
+                                   ZIC_MQTT_QOS_TELEMETRY,
+                                   false);
+        }
         xSemaphoreGive(s_ctx_lock);
 
         vTaskDelay(pdMS_TO_TICKS(5000));
