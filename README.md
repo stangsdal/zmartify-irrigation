@@ -25,3 +25,7 @@ This repository is being implemented incrementally from the v3.0 documentation p
 1. Install ESP-IDF.
 2. Select target: `esp32s3`.
 3. Build with `idf.py build`.
+
+## Documentation
+
+- [MQTT Command Interface](docs/mqtt-command-interface.md)
