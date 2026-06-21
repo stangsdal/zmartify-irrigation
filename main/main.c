@@ -1,6 +1,7 @@
 #include "esp_log.h"
 #include <stdlib.h>
 #include <string.h>
+#include "cJSON.h"
 #include "freertos/event_groups.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -114,6 +115,36 @@ static bool zic_parse_u32_payload(const char *payload, size_t payload_len, uint3
     return true;
 }
 
+static cJSON *zic_parse_json_payload(const char *payload,
+                                     size_t payload_len,
+                                     char *scratch,
+                                     size_t scratch_len)
+{
+    if (payload == NULL || scratch == NULL || scratch_len == 0 || payload_len == 0) {
+        return NULL;
+    }
+
+    zic_copy_to_cstr(scratch, scratch_len, payload, payload_len);
+    return cJSON_Parse(scratch);
+}
+
+static bool zic_get_json_u32(const cJSON *root, const char *key, uint32_t *value_out)
+{
+    const cJSON *item;
+
+    if (root == NULL || key == NULL || value_out == NULL) {
+        return false;
+    }
+
+    item = cJSON_GetObjectItemCaseSensitive(root, key);
+    if (!cJSON_IsNumber(item) || item->valuedouble < 0) {
+        return false;
+    }
+
+    *value_out = (uint32_t)item->valuedouble;
+    return true;
+}
+
 static void zic_mqtt_on_message(const char *topic,
                                 size_t topic_len,
                                 const char *payload,
@@ -123,7 +154,10 @@ static void zic_mqtt_on_message(const char *topic,
     zic_runtime_command_t cmd;
     zic_mqtt_command_t mqtt_cmd;
     uint32_t value;
+    uint32_t runtime_seconds;
     char topic_buf[ZIC_MQTT_TOPIC_MAX];
+    char json_scratch[256];
+    cJSON *json = NULL;
 
     (void)user_ctx;
     if (s_command_queue == NULL || topic == NULL) {
@@ -132,6 +166,7 @@ static void zic_mqtt_on_message(const char *topic,
 
     memset(&cmd, 0, sizeof(cmd));
     value = 0;
+    runtime_seconds = 300;
     zic_copy_to_cstr(topic_buf, sizeof(topic_buf), topic, topic_len);
     if (!zic_mqtt_command_from_topic(topic_buf, &mqtt_cmd)) {
         return;
@@ -140,26 +175,84 @@ static void zic_mqtt_on_message(const char *topic,
     switch (mqtt_cmd) {
     case ZIC_MQTT_CMD_START_ZONE:
         if (!zic_parse_u32_payload(payload, payload_len, &value)) {
+            json = zic_parse_json_payload(payload, payload_len, json_scratch, sizeof(json_scratch));
+            if (json == NULL) {
+                ESP_LOGW(TAG, "Invalid start_zone payload");
+                return;
+            }
+
+            if (!zic_get_json_u32(json, "zone", &value) && !zic_get_json_u32(json, "zone_id", &value)) {
+                cJSON_Delete(json);
+                ESP_LOGW(TAG, "start_zone requires zone or zone_id");
+                return;
+            }
+
+            if (zic_get_json_u32(json, "runtime_seconds", &runtime_seconds) ||
+                zic_get_json_u32(json, "runtime", &runtime_seconds)) {
+                cmd.runtime_seconds = runtime_seconds;
+            }
+
+            cJSON_Delete(json);
+        }
+
+        if (value == 0 || value > ZIC_MAX_ZONES) {
+            ESP_LOGW(TAG, "start_zone zone out of range: %lu", (unsigned long)value);
             return;
         }
+
         cmd.type = ZIC_CMD_START_ZONE;
         cmd.zone_id = (uint8_t)value;
-        cmd.runtime_seconds = 300;
+        if (cmd.runtime_seconds == 0) {
+            cmd.runtime_seconds = 300;
+        }
         break;
+
     case ZIC_MQTT_CMD_STOP_ZONE:
         if (!zic_parse_u32_payload(payload, payload_len, &value)) {
+            json = zic_parse_json_payload(payload, payload_len, json_scratch, sizeof(json_scratch));
+            if (json == NULL) {
+                ESP_LOGW(TAG, "Invalid stop_zone payload");
+                return;
+            }
+
+            if (!zic_get_json_u32(json, "zone", &value) && !zic_get_json_u32(json, "zone_id", &value)) {
+                cJSON_Delete(json);
+                ESP_LOGW(TAG, "stop_zone requires zone or zone_id");
+                return;
+            }
+            cJSON_Delete(json);
+        }
+
+        if (value == 0 || value > ZIC_MAX_ZONES) {
+            ESP_LOGW(TAG, "stop_zone zone out of range: %lu", (unsigned long)value);
             return;
         }
+
         cmd.type = ZIC_CMD_STOP_ZONE;
         cmd.zone_id = (uint8_t)value;
         break;
+
     case ZIC_MQTT_CMD_STOP_ALL:
         cmd.type = ZIC_CMD_STOP_ALL;
         break;
+
     case ZIC_MQTT_CMD_RAIN_DELAY:
         if (!zic_parse_u32_payload(payload, payload_len, &value)) {
-            return;
+            json = zic_parse_json_payload(payload, payload_len, json_scratch, sizeof(json_scratch));
+            if (json == NULL) {
+                ESP_LOGW(TAG, "Invalid rain_delay payload");
+                return;
+            }
+
+            if (!zic_get_json_u32(json, "hours", &value) &&
+                !zic_get_json_u32(json, "rain_delay_hours", &value)) {
+                cJSON_Delete(json);
+                ESP_LOGW(TAG, "rain_delay requires hours or rain_delay_hours");
+                return;
+            }
+            cJSON_Delete(json);
         }
+
         if (value == 0) {
             cmd.type = ZIC_CMD_CLEAR_RAIN_DELAY;
         } else {
@@ -167,6 +260,7 @@ static void zic_mqtt_on_message(const char *topic,
             cmd.rain_delay_hours = (uint16_t)value;
         }
         break;
+
     case ZIC_MQTT_CMD_RUN_PROGRAM:
         return;
     default:
