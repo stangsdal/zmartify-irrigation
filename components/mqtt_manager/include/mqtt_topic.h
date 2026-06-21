@@ -37,3 +37,4 @@ typedef struct {
 
 bool zic_mqtt_topic_build(const char *suffix, char *out_topic, size_t out_topic_len);
 const char *zic_mqtt_command_topic(zic_mqtt_command_t command);
+bool zic_mqtt_command_from_topic(const char *topic, zic_mqtt_command_t *command_out);

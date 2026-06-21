@@ -1,4 +1,6 @@
 #include "esp_log.h"
+#include <stdlib.h>
+#include <string.h>
 #include "freertos/event_groups.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -45,7 +47,7 @@ typedef struct {
     uint8_t zone_id;
     uint32_t runtime_seconds;
     uint16_t rain_delay_hours;
-    const char *ota_url;
+    char ota_url[160];
 } zic_runtime_command_t;
 
 typedef struct {
@@ -65,6 +67,114 @@ static zic_app_context_t s_ctx;
 static QueueHandle_t s_command_queue;
 static EventGroupHandle_t s_runtime_events;
 static SemaphoreHandle_t s_ctx_lock;
+
+static const char *s_command_topics[] = {
+    ZIC_MQTT_ROOT "/command/start_zone",
+    ZIC_MQTT_ROOT "/command/stop_zone",
+    ZIC_MQTT_ROOT "/command/run_program",
+    ZIC_MQTT_ROOT "/command/stop_all",
+    ZIC_MQTT_ROOT "/command/rain_delay",
+};
+
+static size_t zic_copy_to_cstr(char *dst, size_t dst_len, const char *src, size_t src_len)
+{
+    size_t len;
+
+    if (dst == NULL || dst_len == 0 || src == NULL) {
+        return 0;
+    }
+
+    len = src_len;
+    if (len >= dst_len) {
+        len = dst_len - 1;
+    }
+
+    memcpy(dst, src, len);
+    dst[len] = '\0';
+    return len;
+}
+
+static bool zic_parse_u32_payload(const char *payload, size_t payload_len, uint32_t *value_out)
+{
+    char buf[32];
+    char *end;
+    unsigned long v;
+
+    if (value_out == NULL || payload == NULL || payload_len == 0) {
+        return false;
+    }
+
+    zic_copy_to_cstr(buf, sizeof(buf), payload, payload_len);
+    v = strtoul(buf, &end, 10);
+    if (end == buf) {
+        return false;
+    }
+
+    *value_out = (uint32_t)v;
+    return true;
+}
+
+static void zic_mqtt_on_message(const char *topic,
+                                size_t topic_len,
+                                const char *payload,
+                                size_t payload_len,
+                                void *user_ctx)
+{
+    zic_runtime_command_t cmd;
+    zic_mqtt_command_t mqtt_cmd;
+    uint32_t value;
+    char topic_buf[ZIC_MQTT_TOPIC_MAX];
+
+    (void)user_ctx;
+    if (s_command_queue == NULL || topic == NULL) {
+        return;
+    }
+
+    memset(&cmd, 0, sizeof(cmd));
+    value = 0;
+    zic_copy_to_cstr(topic_buf, sizeof(topic_buf), topic, topic_len);
+    if (!zic_mqtt_command_from_topic(topic_buf, &mqtt_cmd)) {
+        return;
+    }
+
+    switch (mqtt_cmd) {
+    case ZIC_MQTT_CMD_START_ZONE:
+        if (!zic_parse_u32_payload(payload, payload_len, &value)) {
+            return;
+        }
+        cmd.type = ZIC_CMD_START_ZONE;
+        cmd.zone_id = (uint8_t)value;
+        cmd.runtime_seconds = 300;
+        break;
+    case ZIC_MQTT_CMD_STOP_ZONE:
+        if (!zic_parse_u32_payload(payload, payload_len, &value)) {
+            return;
+        }
+        cmd.type = ZIC_CMD_STOP_ZONE;
+        cmd.zone_id = (uint8_t)value;
+        break;
+    case ZIC_MQTT_CMD_STOP_ALL:
+        cmd.type = ZIC_CMD_STOP_ALL;
+        break;
+    case ZIC_MQTT_CMD_RAIN_DELAY:
+        if (!zic_parse_u32_payload(payload, payload_len, &value)) {
+            return;
+        }
+        if (value == 0) {
+            cmd.type = ZIC_CMD_CLEAR_RAIN_DELAY;
+        } else {
+            cmd.type = ZIC_CMD_SET_RAIN_DELAY;
+            cmd.rain_delay_hours = (uint16_t)value;
+        }
+        break;
+    case ZIC_MQTT_CMD_RUN_PROGRAM:
+        return;
+    default:
+        return;
+    }
+
+    xQueueSend(s_command_queue, &cmd, 0);
+}
 
 static void zic_runtime_init_context(zic_app_context_t *ctx)
 {
@@ -93,6 +203,10 @@ static void zic_runtime_init_context(zic_app_context_t *ctx)
         .client_id = ZIC_DEFAULT_CLIENT_ID,
         .username = NULL,
         .password = NULL,
+        .subscribe_topics = s_command_topics,
+        .subscribe_topic_count = sizeof(s_command_topics) / sizeof(s_command_topics[0]),
+        .on_message = zic_mqtt_on_message,
+        .user_ctx = NULL,
     };
     if (mqtt_transport_init(&ctx->mqtt_transport, &mqtt_cfg)) {
         mqtt_transport_start(&ctx->mqtt_transport);
@@ -124,7 +238,9 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
             .firmware_url = cmd->ota_url,
             .cert_pem = NULL,
         };
-        ota_manager_perform(&ota_cfg);
+        if (cmd->ota_url[0] != '\0') {
+            ota_manager_perform(&ota_cfg);
+        }
         break;
     }
     default:
