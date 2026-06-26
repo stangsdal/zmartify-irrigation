@@ -1,6 +1,7 @@
 idf_component_register(SRCS "main.c"
                     INCLUDE_DIRS "."
-                    REQUIRES alarm_manager
+                    REQUIRES event_bus
+                             alarm_manager
                              et_engine
                              flow_manager
                              irrigation_engine
