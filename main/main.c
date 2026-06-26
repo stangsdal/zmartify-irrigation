@@ -13,6 +13,7 @@
 #include "freertos/task.h"
 #include "event_bus.h"
 #include "hal.h"
+#include "config_manager.h"
 
 static const char *TAG = "zic_main";
 
@@ -52,6 +53,21 @@ static void system_init_task(void *arg)
     {
         ESP_LOGI(TAG, "HAL initialized successfully");
         event_bus_publish(EVENT_SYSTEM_BOOT, 0, EVENT_PRIORITY_NORMAL, 0, NULL, 0);
+    }
+
+    // Step 3: Initialize Configuration Manager
+    ESP_LOGI(TAG, "[Step 4] Initializing Configuration Manager...");
+    if (config_manager_init() != CFG_OK)
+    {
+        ESP_LOGE(TAG, "Configuration Manager initialization failed!");
+    }
+    else
+    {
+        const zic_config_t *cfg = config_get();
+        ESP_LOGI(TAG, "Config loaded: schema v%u, %u zones, mode=%d",
+                 cfg->schema_version,
+                 cfg->system.active_zone_count,
+                 cfg->system.operational_mode);
     }
 
     // Log statistics

@@ -26,6 +26,6 @@ dependencies:
 direct_dependencies:
 - espressif/cjson
 - espressif/mqtt
-manifest_hash: db67f25efe412d68a3cbe151a62e4af42508b43d0b3c41c80e235a280336fae4
+manifest_hash: 83968595e4ff005a0d76799db20c73e53f66da1e5fd074376f6bc8d3bd210bef
 target: esp32s3
 version: 3.0.0
