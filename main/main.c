@@ -24,6 +24,9 @@
 #include "alarm_manager.h"
 #include "storage_manager.h"
 #include "mqtt_manager.h"
+#include "ota_manager.h"
+#include "diagnostics_manager.h"
+#include "version.h"
 
 static const char *TAG = "zic_main";
 
@@ -36,6 +39,8 @@ static void system_init_task(void *arg)
 
     ESP_LOGI(TAG, "===================================");
     ESP_LOGI(TAG, "Zmartify Irrigation Controller v5.0");
+    ESP_LOGI(TAG, "Firmware %s (%s %s)", ZIC_FW_VERSION_STR, ZIC_FW_BUILD_DATE, ZIC_FW_BUILD_TIME);
+    ESP_LOGI(TAG, "Model: %s", ZIC_CONTROLLER_MODEL);
     ESP_LOGI(TAG, "===================================");
 
     // Step 1: Initialize Event Bus (foundation for all inter-module communication)
@@ -125,6 +130,11 @@ static void system_init_task(void *arg)
     ESP_LOGI(TAG, "[Step 9] Initializing MQTT Manager...");
     mqtt_manager_init();
     ESP_LOGI(TAG, "MQTT Manager started (connecting to WiFi/broker)");
+
+    // Step 9: Initialize Diagnostics Manager (OTA rollback guard + health monitoring)
+    ESP_LOGI(TAG, "[Step 10] Initializing Diagnostics Manager...");
+    diagnostics_manager_init();
+    ESP_LOGI(TAG, "All subsystems initialized - controller operational");
 
     // Log statistics
     event_bus_stats_t stats;

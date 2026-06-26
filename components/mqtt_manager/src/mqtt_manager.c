@@ -11,6 +11,7 @@
 #include "pressure_manager.h"
 #include "alarm_manager.h"
 #include "storage_manager.h"
+#include "ota_manager.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -119,6 +120,18 @@ static void handle_command(const char *cmd, const char *payload)
         unsigned h = 0;
         sscanf(payload, "{\"hours\":%u", &h);
         weather_set_rain_delay((uint16_t)h);
+    }
+    else if (strcmp(cmd, "ota") == 0)
+    {
+        char url[192] = {0};
+        sscanf(payload, "{\"url\":\"%191[^\"]\"", url);
+        if (url[0] != '\0')
+        {
+            ESP_LOGI(TAG, "OTA triggered: %s", url);
+            event_bus_publish(EVENT_OTA_STARTED, 0, EVENT_PRIORITY_HIGH, 0, NULL, 0);
+            ota_manager_config_t ota_cfg = { .firmware_url = url, .cert_pem = NULL };
+            ota_manager_perform(&ota_cfg);  /* Does not return on success */
+        }
     }
 }
 

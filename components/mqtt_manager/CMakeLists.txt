@@ -18,4 +18,5 @@ idf_component_register(
         pressure_manager
         alarm_manager
         storage_manager
+        ota_manager
 )
