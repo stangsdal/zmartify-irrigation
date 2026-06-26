@@ -102,4 +102,4 @@ typedef enum hal_result
  * @return true  All modules initialised successfully
  * @return false At least one module failed
  */
-bool hal_init(void);
+bool zic_hal_init(void);

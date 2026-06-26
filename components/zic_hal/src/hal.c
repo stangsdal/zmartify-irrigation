@@ -8,7 +8,7 @@
 
 static const char *TAG = "hal";
 
-bool hal_init(void)
+bool zic_hal_init(void)
 {
     ESP_LOGI(TAG, "Initialising Hardware Abstraction Layer...");
 

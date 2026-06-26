@@ -11,4 +11,6 @@ idf_component_register(SRCS "main.c"
                              weather_manager
                              et_engine
                              alarm_manager
-                             storage_manager)
+                             storage_manager
+                             mqtt_manager
+                             ota_manager)

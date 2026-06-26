@@ -23,6 +23,7 @@
 #include "et_engine.h"
 #include "alarm_manager.h"
 #include "storage_manager.h"
+#include "mqtt_manager.h"
 
 static const char *TAG = "zic_main";
 
@@ -53,7 +54,7 @@ static void system_init_task(void *arg)
 
     // Step 2: Initialize Hardware Abstraction Layer
     ESP_LOGI(TAG, "[Step 3] Initializing HAL...");
-    if (!hal_init())
+    if (!zic_hal_init())
     {
         ESP_LOGE(TAG, "HAL initialization failed!");
         /* Continue – some peripherals may be absent in dev */
@@ -119,6 +120,11 @@ static void system_init_task(void *arg)
     storage_manager_init();
     alarm_manager_init();
     ESP_LOGI(TAG, "Alarm Manager and Event Logger ready");
+
+    // Step 8: Initialize MQTT Manager (WiFi + MQTT + Telemetry)
+    ESP_LOGI(TAG, "[Step 9] Initializing MQTT Manager...");
+    mqtt_manager_init();
+    ESP_LOGI(TAG, "MQTT Manager started (connecting to WiFi/broker)");
 
     // Log statistics
     event_bus_stats_t stats;
