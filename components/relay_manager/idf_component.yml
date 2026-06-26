@@ -1,0 +1,2 @@
+version: 5.0.0
+description: Relay Manager - safe MCP23017 relay control with event publication

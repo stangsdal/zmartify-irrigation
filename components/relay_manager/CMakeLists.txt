@@ -1,11 +1,9 @@
 idf_component_register(
-    SRCS "src/zone_manager.c"
+    SRCS "src/relay_manager.c"
     INCLUDE_DIRS "include"
     REQUIRES
         freertos
-        esp_timer
         esp_common
-        relay_manager
-        config_manager
+        zic_hal
         event_bus
 )

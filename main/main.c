@@ -14,6 +14,9 @@
 #include "event_bus.h"
 #include "hal.h"
 #include "config_manager.h"
+#include "relay_manager.h"
+#include "zone_manager.h"
+#include "irrigation_engine.h"
 
 static const char *TAG = "zic_main";
 
@@ -68,6 +71,23 @@ static void system_init_task(void *arg)
                  cfg->schema_version,
                  cfg->system.active_zone_count,
                  cfg->system.operational_mode);
+    }
+
+    // Step 4: Initialize Relay Manager + Zone Manager + Irrigation Engine
+    ESP_LOGI(TAG, "[Step 5] Initializing Irrigation Engine...");
+    {
+        config_system_t sys;
+        config_get_system(&sys);
+        relay_manager_init((uint8_t)sys.max_simultaneous_zones);
+    }
+    zone_manager_init();
+    if (!irrigation_engine_init())
+    {
+        ESP_LOGE(TAG, "Irrigation Engine initialization failed!");
+    }
+    else
+    {
+        ESP_LOGI(TAG, "Irrigation Engine ready (state: IDLE)");
     }
 
     // Log statistics
