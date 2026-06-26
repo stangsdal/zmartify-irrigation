@@ -5,4 +5,6 @@ idf_component_register(SRCS "main.c"
                              config_manager
                              relay_manager
                              zone_manager
-                             irrigation_engine)
+                             irrigation_engine
+                             flow_manager
+                             pressure_manager)

@@ -17,6 +17,8 @@
 #include "relay_manager.h"
 #include "zone_manager.h"
 #include "irrigation_engine.h"
+#include "flow_manager.h"
+#include "pressure_manager.h"
 
 static const char *TAG = "zic_main";
 
@@ -89,6 +91,18 @@ static void system_init_task(void *arg)
     {
         ESP_LOGI(TAG, "Irrigation Engine ready (state: IDLE)");
     }
+
+    // Step 5: Initialize Flow & Pressure Managers (Hydraulic Safety System)
+    ESP_LOGI(TAG, "[Step 6] Initializing Hydraulic Safety System...");
+    if (!flow_manager_init())
+    {
+        ESP_LOGW(TAG, "Flow Manager init failed (sensor may be absent)");
+    }
+    if (!pressure_manager_init())
+    {
+        ESP_LOGW(TAG, "Pressure Manager init failed (sensor may be absent)");
+    }
+    ESP_LOGI(TAG, "Hydraulic Safety System started");
 
     // Log statistics
     event_bus_stats_t stats;

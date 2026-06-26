@@ -17,6 +17,11 @@
 
 static const char *TAG = "irr_engine";
 
+/* Forward declarations */
+static void execute_emergency(const char *reason);
+
+/* ─── Engine state ──────────────────────────────────────────────────────── */
+
 typedef enum
 {
     CMD_START_ZONE = 0,
@@ -41,6 +46,23 @@ static TaskHandle_t   s_task_handle = NULL;
 static engine_state_t s_state       = ENGINE_STATE_IDLE;
 static uint8_t        s_active_zone = 0;
 static bool           s_initialized = false;
+
+/* ─── Hydraulic fault callback ──────────────────────────────────────── */
+
+static void on_hydraulic_fault(const zic_event_t *event, void *ctx)
+{
+    (void)ctx;
+    if (s_state != ENGINE_STATE_ZONE_RUNNING &&
+        s_state != ENGINE_STATE_MASTER_OPEN)
+    {
+        return;
+    }
+    const char *reason = (event->event_id == EVENT_FLOW_ANOMALY)
+                       ? "Flow anomaly"
+                       : "Pressure out of bounds";
+    ESP_LOGW(TAG, "Hydraulic fault: %s", reason);
+    execute_emergency(reason);
+}
 
 static void set_state(engine_state_t ns)
 {
@@ -189,6 +211,11 @@ bool irrigation_engine_init(void)
     s_state       = ENGINE_STATE_IDLE;
     s_active_zone = 0;
     s_initialized = true;
+
+    /* Subscribe to hydraulic fault events from flow/pressure managers */
+    event_bus_subscribe(EVENT_FLOW_ANOMALY,             on_hydraulic_fault, NULL);
+    event_bus_subscribe(EVENT_PRESSURE_OUT_OF_BOUNDS,   on_hydraulic_fault, NULL);
+
     ESP_LOGI(TAG, "Irrigation Engine initialized");
     return true;
 }
