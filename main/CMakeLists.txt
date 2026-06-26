@@ -9,4 +9,6 @@ idf_component_register(SRCS "main.c"
                              flow_manager
                              pressure_manager
                              weather_manager
-                             et_engine)
+                             et_engine
+                             alarm_manager
+                             storage_manager)

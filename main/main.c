@@ -21,6 +21,8 @@
 #include "pressure_manager.h"
 #include "weather_manager.h"
 #include "et_engine.h"
+#include "alarm_manager.h"
+#include "storage_manager.h"
 
 static const char *TAG = "zic_main";
 
@@ -111,6 +113,12 @@ static void system_init_task(void *arg)
     weather_manager_init();
     et_engine_init();
     ESP_LOGI(TAG, "Weather Manager and ET Engine ready");
+
+    // Step 7: Initialize Alarm Manager and Storage (Event Logger)
+    ESP_LOGI(TAG, "[Step 8] Initializing Alarm Manager and Event Logger...");
+    storage_manager_init();
+    alarm_manager_init();
+    ESP_LOGI(TAG, "Alarm Manager and Event Logger ready");
 
     // Log statistics
     event_bus_stats_t stats;
