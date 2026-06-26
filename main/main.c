@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "event_bus.h"
+#include "hal.h"
 
 static const char *TAG = "zic_main";
 
@@ -39,6 +40,19 @@ static void system_init_task(void *arg)
     // Publish system boot event
     event_bus_publish(EVENT_SYSTEM_BOOT, 0, EVENT_PRIORITY_HIGH, 0, NULL, 0);
     vTaskDelay(pdMS_TO_TICKS(100));
+
+    // Step 2: Initialize Hardware Abstraction Layer
+    ESP_LOGI(TAG, "[Step 3] Initializing HAL...");
+    if (!hal_init())
+    {
+        ESP_LOGE(TAG, "HAL initialization failed!");
+        /* Continue – some peripherals may be absent in dev */
+    }
+    else
+    {
+        ESP_LOGI(TAG, "HAL initialized successfully");
+        event_bus_publish(EVENT_SYSTEM_BOOT, 0, EVENT_PRIORITY_NORMAL, 0, NULL, 0);
+    }
 
     // Log statistics
     event_bus_stats_t stats;
