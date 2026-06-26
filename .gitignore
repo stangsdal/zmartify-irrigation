@@ -1,7 +1,89 @@
+# ESP-IDF Build System
 build/
-managed_components/
-.vscode/
-.DS_Store
-sdkconfig
 sdkconfig.old
+sdkconfig.backup
+.pioenvs/
+.piolibdeps/
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.bak
+
+# Python & Virtual Environments
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+.pytest_cache/
+.tox/
+venv/
+env/
+
+# GDB & Debugging
+.gdbinit
+.gdb_history
+*.o
+*.a
+*.so
+*.dylib
+
+# Build artifacts
+*.elf
+*.bin
+*.map
+*.lst
+*.hex
+
+# Temporary files
+*.tmp
 *.log
+tmp/
+temp/
+
+# Archive
+archive/
+
+# Managed components (regenerate if needed)
+managed_components/
+
+# User-specific
+.env.local
+secrets.txt
+private_keys/
+
+# Build intermediates
+build.ninja
+cmake_install.cmake
+CMakeCache.txt
+
+# macOS specific
+.AppleDouble
+.LSOverride
+._*
+
+# Linux specific
+.directory
+Thumbs.db
+
+# Backup files
+*.orig
+*.bkp
+
+# Documentation builds
+docs/_build/
+docs/.doctrees/
+site/
+
+# Test coverage
+.coverage
+htmlcov/
+
+# Device-specific (add as needed)
+device_credentials.txt
+local_config.h

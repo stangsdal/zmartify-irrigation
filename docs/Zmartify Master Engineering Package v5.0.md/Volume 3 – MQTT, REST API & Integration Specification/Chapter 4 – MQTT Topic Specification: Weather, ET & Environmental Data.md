@@ -1,0 +1,644 @@
+# Zmartify Master Engineering Package v5.0
+
+# Volume 3
+
+# MQTT, API & Integration Specification
+
+## Chapter 4
+
+# MQTT Topic Specification – Weather, Evapotranspiration (ET) & Environmental Data
+
+---
+
+# 4.1 Purpose
+
+This chapter defines the MQTT interface used to exchange weather information, evapotranspiration (ET) calculations and environmental data between the Zmartify Irrigation Controller and external systems.
+
+Weather information is a fundamental component of the Zmartify irrigation strategy and directly influences:
+
+* Irrigation scheduling
+* Seasonal adjustment
+* Rain delay
+* Freeze protection
+* Wind protection
+* Water budgeting
+* ET calculations
+* Predictive irrigation
+
+All environmental information shall be published through the Weather Manager.
+
+---
+
+# 4.2 Design Objectives
+
+The Weather namespace shall provide:
+
+* Current weather conditions
+* Forecast weather
+* ET calculations
+* Rainfall information
+* Freeze warnings
+* Wind warnings
+* Weather recommendations
+* Weather provider status
+* Historical environmental data
+
+The namespace shall remain independent of any specific weather service.
+
+---
+
+# 4.3 Namespace
+
+Root namespace:
+
+```text
+zmartify/weather/
+```
+
+Primary topics:
+
+```text
+current
+forecast
+hourly
+daily
+rain
+wind
+temperature
+humidity
+pressure
+solar
+uv
+et
+recommendation
+provider
+alerts
+statistics
+```
+
+---
+
+# 4.4 Current Weather
+
+Topic
+
+```text
+zmartify/weather/current
+```
+
+QoS
+
+```text
+0
+```
+
+Retained
+
+```text
+Yes
+```
+
+Publish interval
+
+Default:
+
+5 minutes
+
+Immediately after significant changes.
+
+---
+
+Example
+
+```json
+{
+  "timestamp":"2026-07-14T13:00:00Z",
+  "device":"ZIC-S3-202600001",
+  "type":"weather_current",
+  "payload":
+  {
+    "temperature":22.6,
+    "humidity":61,
+    "pressure":1016.2,
+    "wind_speed":2.8,
+    "wind_gust":5.4,
+    "rain":0.0,
+    "solar":682,
+    "uv":5,
+    "cloud_cover":18,
+    "condition":"Partly Cloudy"
+  }
+}
+```
+
+---
+
+# 4.5 Weather Forecast
+
+Topic
+
+```text
+zmartify/weather/forecast
+```
+
+Purpose
+
+Provides summarized forecast data used by irrigation algorithms.
+
+---
+
+Example
+
+```json
+{
+  "payload":
+  {
+    "next_rain_hours":18,
+    "expected_rain_mm":7.2,
+    "max_temperature":26.4,
+    "min_temperature":16.2,
+    "max_wind":7.3,
+    "confidence":92
+  }
+}
+```
+
+---
+
+# 4.6 Hourly Forecast
+
+Topic
+
+```text
+zmartify/weather/hourly
+```
+
+The payload contains an array.
+
+Example
+
+```json
+{
+  "payload":
+  [
+    {
+      "hour":"14:00",
+      "temperature":23.0,
+      "rain":0.0,
+      "wind":2.4
+    },
+    {
+      "hour":"15:00",
+      "temperature":24.1,
+      "rain":0.0,
+      "wind":3.1
+    }
+  ]
+}
+```
+
+Recommended forecast depth:
+
+24–48 hours.
+
+---
+
+# 4.7 Daily Forecast
+
+Topic
+
+```text
+zmartify/weather/daily
+```
+
+Recommended depth:
+
+7 days
+
+Example
+
+```json
+{
+  "payload":
+  [
+    {
+      "date":"2026-07-15",
+      "rain":8.2,
+      "temperature_max":24.8,
+      "temperature_min":15.9,
+      "wind":5.2
+    }
+  ]
+}
+```
+
+---
+
+# 4.8 Temperature
+
+Topic
+
+```text
+zmartify/weather/temperature
+```
+
+Example
+
+```json
+{
+  "payload":
+  {
+      "current":22.8,
+      "minimum":15.1,
+      "maximum":25.4,
+      "average":20.2
+  }
+}
+```
+
+Unit
+
+°C
+
+---
+
+# 4.9 Humidity
+
+Topic
+
+```text
+zmartify/weather/humidity
+```
+
+Example
+
+```json
+{
+  "payload":
+  {
+      "relative":63
+  }
+}
+```
+
+Unit
+
+Percent
+
+---
+
+# 4.10 Atmospheric Pressure
+
+Topic
+
+```text
+zmartify/weather/pressure
+```
+
+Example
+
+```json
+{
+  "payload":
+  {
+      "pressure":1015.8
+  }
+}
+```
+
+Unit
+
+hPa
+
+---
+
+# 4.11 Rainfall
+
+Topic
+
+```text
+zmartify/weather/rain
+```
+
+Example
+
+```json
+{
+  "payload":
+  {
+      "current":0.0,
+      "today":2.3,
+      "week":18.5,
+      "month":62.1
+  }
+}
+```
+
+Units
+
+Millimetres
+
+---
+
+# 4.12 Wind
+
+Topic
+
+```text
+zmartify/weather/wind
+```
+
+Example
+
+```json
+{
+  "payload":
+  {
+      "speed":3.4,
+      "gust":6.8,
+      "direction":245
+  }
+}
+```
+
+Direction
+
+Degrees
+
+Speed
+
+m/s
+
+---
+
+# 4.13 Solar Radiation
+
+Topic
+
+```text
+zmartify/weather/solar
+```
+
+Example
+
+```json
+{
+  "payload":
+  {
+      "radiation":742
+  }
+}
+```
+
+Unit
+
+W/m²
+
+---
+
+# 4.14 UV Index
+
+Topic
+
+```text
+zmartify/weather/uv
+```
+
+Example
+
+```json
+{
+  "payload":
+  {
+      "index":6
+  }
+}
+```
+
+---
+
+# 4.15 Evapotranspiration
+
+Topic
+
+```text
+zmartify/weather/et
+```
+
+One of the most important weather topics.
+
+Example
+
+```json
+{
+  "payload":
+  {
+      "eto":4.8,
+      "etc":3.6,
+      "method":"FAO56",
+      "confidence":94
+  }
+}
+```
+
+Units
+
+mm/day
+
+---
+
+# 4.16 Weather Recommendation
+
+Topic
+
+```text
+zmartify/weather/recommendation
+```
+
+Purpose
+
+Provides the irrigation recommendation generated by the Weather Manager.
+
+Example
+
+```json
+{
+  "payload":
+  {
+      "action":"Reduce",
+      "runtime_factor":0.75,
+      "reason":"Rain Forecast"
+  }
+}
+```
+
+Possible actions:
+
+* Normal
+* Reduce
+* Delay
+* Skip
+* Suspend
+
+---
+
+# 4.17 Weather Provider
+
+Topic
+
+```text
+zmartify/weather/provider
+```
+
+Example
+
+```json
+{
+  "payload":
+  {
+      "provider":"OpenWeather",
+      "last_update":"2026-07-14T12:55:00Z",
+      "api_latency_ms":321,
+      "status":"Connected"
+  }
+}
+```
+
+Future providers:
+
+* OpenWeather
+* Open-Meteo
+* Tomorrow.io
+* WeatherAPI
+* Local Weather Station
+
+---
+
+# 4.18 Weather Alerts
+
+Topic
+
+```text
+zmartify/weather/alerts
+```
+
+Example
+
+```json
+{
+  "payload":
+  [
+    {
+      "severity":"warning",
+      "type":"High Wind",
+      "expires":"2026-07-14T16:00:00Z"
+    }
+  ]
+}
+```
+
+Alerts shall be forwarded immediately to the Alarm Manager.
+
+---
+
+# 4.19 Weather Statistics
+
+Topic
+
+```text
+zmartify/weather/statistics
+```
+
+Example
+
+```json
+{
+  "payload":
+  {
+      "rain_today":3.8,
+      "rain_month":61.5,
+      "average_temperature":19.4,
+      "average_et":3.2
+  }
+}
+```
+
+---
+
+# 4.20 Publish Rates
+
+| Topic          | Interval |
+| -------------- | -------: |
+| current        |    5 min |
+| forecast       |   30 min |
+| hourly         |   30 min |
+| daily          |   60 min |
+| rain           |    5 min |
+| wind           |    5 min |
+| temperature    |    5 min |
+| humidity       |    5 min |
+| et             |   30 min |
+| recommendation |    Event |
+
+Publication intervals shall be configurable.
+
+---
+
+# 4.21 QoS Policy
+
+| Topic          | QoS | Retained |
+| -------------- | :-: | :------: |
+| current        |  0  |    Yes   |
+| forecast       |  0  |    Yes   |
+| et             |  1  |    Yes   |
+| recommendation |  1  |    Yes   |
+| alerts         |  2  |    No    |
+| provider       |  1  |    Yes   |
+
+---
+
+# 4.22 Error Handling
+
+If weather data is unavailable:
+
+Example
+
+```json
+{
+  "payload":
+  {
+      "status":"Unavailable",
+      "reason":"Provider Timeout",
+      "cached":true,
+      "age_minutes":42
+  }
+}
+```
+
+The controller shall continue operating using the most recent validated weather dataset.
+
+---
+
+# 4.23 Engineering Notes
+
+The Weather namespace has been designed to remain independent of any external weather provider.
+
+All payloads represent normalized engineering data rather than provider-specific responses. This abstraction allows weather providers to be replaced without affecting external integrations or internal firmware modules.
+
+The `recommendation` topic is particularly valuable for automation systems because it communicates the controller's irrigation decision rather than requiring external systems to interpret raw weather data.
+
+---
+
+# 4.24 Chapter Summary
+
+This chapter defines the MQTT interface for weather, environmental and evapotranspiration data.
+
+The standardized namespace provides a complete abstraction of current conditions, forecasts, ET calculations and irrigation recommendations while remaining independent of any particular weather service. These interfaces enable reliable integration with smart-home platforms and external analytics systems without exposing provider-specific implementation details.
+
+---
+
+# End of Chapter 4
+
+**Next Chapter**
+
+**Chapter 5 – MQTT Topic Specification: Irrigation Programs, Zones & Manual Control**
