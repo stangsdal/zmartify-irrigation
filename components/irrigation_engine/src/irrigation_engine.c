@@ -8,6 +8,7 @@
 #include "relay_manager.h"
 #include "config_manager.h"
 #include "event_bus.h"
+#include "weather_manager.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -95,6 +96,14 @@ static bool pre_flight_checks(uint8_t zone_id)
         ESP_LOGW(TAG, "Controller in OFF mode");
         return false;
     }
+
+    /* 3. Weather / rain delay check */
+    if (!weather_irrigation_allowed())
+    {
+        ESP_LOGW(TAG, "Pre-flight: weather blocks irrigation for zone %u", zone_id);
+        return false;
+    }
+
     return true;
 }
 

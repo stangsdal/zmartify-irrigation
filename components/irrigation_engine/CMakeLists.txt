@@ -9,4 +9,5 @@ idf_component_register(
         relay_manager
         config_manager
         event_bus
+        weather_manager
 )

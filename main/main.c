@@ -19,6 +19,8 @@
 #include "irrigation_engine.h"
 #include "flow_manager.h"
 #include "pressure_manager.h"
+#include "weather_manager.h"
+#include "et_engine.h"
 
 static const char *TAG = "zic_main";
 
@@ -103,6 +105,12 @@ static void system_init_task(void *arg)
         ESP_LOGW(TAG, "Pressure Manager init failed (sensor may be absent)");
     }
     ESP_LOGI(TAG, "Hydraulic Safety System started");
+
+    // Step 6: Initialize Weather Manager and ET Engine
+    ESP_LOGI(TAG, "[Step 7] Initializing Weather Manager and ET Engine...");
+    weather_manager_init();
+    et_engine_init();
+    ESP_LOGI(TAG, "Weather Manager and ET Engine ready");
 
     // Log statistics
     event_bus_stats_t stats;
