@@ -18,6 +18,9 @@ static const char *TAG = "hmi_7b_ioexp";
 #define HMI_7B_IO_LCD_RST_BIT    3
 #define HMI_7B_IO_USB_CAN_BIT    5
 
+/* Some 7B carrier revisions gate BL EN on IO2 with inverted polarity. */
+#define HMI_7B_BACKLIGHT_ACTIVE_LOW 0
+
 static bool s_ready = false;
 static uint8_t s_output = HMI_7B_IOEXP_OUTPUT_HIGH;
 static uint8_t s_addr = HMI_7B_IOEXP_ADDR;
@@ -97,8 +100,8 @@ bool hmi_7b_ioexp_init(void)
         return false;
     }
 
-    /* Keep backlight PWM near max in case this rail is PWM-gated. */
-    uint8_t pwm = 247; /* ~97% as used in Waveshare examples */
+    /* Waveshare IO extension PWM: lower values produce brighter backlight. */
+    uint8_t pwm = 0; /* full brightness */
     if (!hmi_7b_bus_write_reg8(s_addr, HMI_7B_IOEXP_REG_PWM, &pwm, 1))
     {
         ESP_LOGW(TAG, "Failed to set IO expander PWM register");
@@ -134,9 +137,13 @@ bool hmi_7b_ioexp_set_output_bit(uint8_t bit, bool high)
 
 bool hmi_7b_ioexp_set_backlight(bool on)
 {
-    /* Keep PWM high and gate with IO2. */
-    (void)hmi_7b_ioexp_set_backlight_pwm(247);
+    /* Keep PWM in bright range and gate with IO2 enable line. */
+    (void)hmi_7b_ioexp_set_backlight_pwm(0);
+#if HMI_7B_BACKLIGHT_ACTIVE_LOW
+    return hmi_7b_ioexp_set_output_bit(HMI_7B_IO_BACKLIGHT_BIT, !on);
+#else
     return hmi_7b_ioexp_set_output_bit(HMI_7B_IO_BACKLIGHT_BIT, on);
+#endif
 }
 
 bool hmi_7b_ioexp_lcd_reset_pulse(void)

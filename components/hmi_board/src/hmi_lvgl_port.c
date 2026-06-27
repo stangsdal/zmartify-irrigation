@@ -11,6 +11,7 @@
 
 #include <inttypes.h>
 #include <stdio.h>
+#include <string.h>
 
 static const char *TAG = "hmi_lvgl";
 
@@ -21,8 +22,9 @@ static const char *TAG = "hmi_lvgl";
 #define LVGL_TASK_MIN_DELAY_MS         2
 #define LVGL_TASK_MAX_DELAY_MS         16
 #define LVGL_DRAW_LINES                40
+#define STATUS_UPDATE_PERIOD_MS         1000
 
-/* Temporary strict RGB-path diagnostic: bypass LVGL and draw full-screen color bars. */
+/* Optional RGB bypass mode for low-level panel debugging (disabled by default). */
 #define HMI_RGB_BYPASS_DIAG_MODE       0
 #define HMI_RGB_PROFILE_SWEEP_MODE     0
 
@@ -51,10 +53,27 @@ static lv_obj_t *s_label_note = NULL;
 static volatile uint32_t s_flush_count = 0;
 static uint32_t s_last_flush_count = 0;
 static int64_t s_last_perf_us = 0;
+static int64_t s_last_status_update_us = 0;
 static hmi_touch_state_t s_last_touch = {0};
 
 static lv_color_t *s_draw_buf_1 = NULL;
 static lv_color_t *s_draw_buf_2 = NULL;
+
+static void set_label_text_if_changed(lv_obj_t *label, const char *text)
+{
+    if (label == NULL || text == NULL)
+    {
+        return;
+    }
+
+    const char *current = lv_label_get_text(label);
+    if (current != NULL && strcmp(current, text) == 0)
+    {
+        return;
+    }
+
+    lv_label_set_text(label, text);
+}
 
 #if HMI_RGB_BYPASS_DIAG_MODE
 static TaskHandle_t s_rgb_diag_task = NULL;
@@ -136,10 +155,8 @@ static void update_status_labels(void)
     {
         snprintf(touch_buf,
                  sizeof(touch_buf),
-                 "Touch: %s (%d, %d)",
-                 s_last_touch.pressed ? "DOWN" : "UP",
-                 (int)s_last_touch.x,
-                 (int)s_last_touch.y);
+                 "Touch: %s",
+                 s_last_touch.pressed ? "DOWN" : "UP");
     }
 
     int64_t now_us = esp_timer_get_time();
@@ -172,16 +189,24 @@ static void update_status_labels(void)
              (unsigned int)up_s);
     snprintf(system_buf, sizeof(system_buf), "System: Online  |  Display: 1024x600 RGB  |  Touch: GT911");
     snprintf(zone_buf, sizeof(zone_buf), "Irrigation: Idle (no active zone)");
-    snprintf(perf_buf, sizeof(perf_buf), "Render: %.1f fps (%.1f ms)", fps, frame_ms);
+    if (flush_delta == 0)
+    {
+        snprintf(perf_buf, sizeof(perf_buf), "Render: idle (no flush)");
+    }
+    else
+    {
+        snprintf(perf_buf, sizeof(perf_buf), "Render: %.1f fps (%.1f ms)", fps, frame_ms);
+    }
 
-    lv_label_set_text(s_label_uptime, uptime_buf);
-    lv_label_set_text(s_label_system, system_buf);
-    lv_label_set_text(s_label_zone, zone_buf);
-    lv_label_set_text(s_label_touch, touch_buf);
-    lv_label_set_text(s_label_perf, perf_buf);
+    set_label_text_if_changed(s_label_uptime, uptime_buf);
+    set_label_text_if_changed(s_label_system, system_buf);
+    set_label_text_if_changed(s_label_zone, zone_buf);
+    set_label_text_if_changed(s_label_touch, touch_buf);
+    set_label_text_if_changed(s_label_perf, perf_buf);
 
     s_last_perf_us = now_us;
     s_last_flush_count = flush_now;
+    s_last_status_update_us = now_us;
 }
 
 static void create_home_screen(void)
@@ -263,7 +288,7 @@ static void create_home_screen(void)
     lv_obj_set_width(s_label_note, LCD_H_RES - 80);
     lv_label_set_text(
         s_label_note,
-        "Home screen active. Touch input and render timing are shown for commissioning while production irrigation widgets are integrated.");
+        "Home screen active. Touch and render status are shown here while irrigation widgets are integrated.");
     lv_obj_set_style_text_color(s_label_note, lv_color_hex(0x4A4E69), 0);
     lv_obj_align(s_label_note, LV_ALIGN_BOTTOM_MID, 0, -22);
 
@@ -588,7 +613,12 @@ static void lvgl_task(void *arg)
 #else
             wait_ms = lv_timer_handler();
 #endif
-            update_status_labels();
+            int64_t now_us = esp_timer_get_time();
+            if (s_last_status_update_us == 0 ||
+                (now_us - s_last_status_update_us) >= (STATUS_UPDATE_PERIOD_MS * 1000))
+            {
+                update_status_labels();
+            }
             lvgl_unlock();
         }
 
@@ -643,7 +673,7 @@ bool hmi_lvgl_port_init(void)
 
     if (!hmi_touch_init())
     {
-        ESP_LOGW(TAG, "Touch init failed; continuing with display-only diagnostics");
+        ESP_LOGW(TAG, "Touch init failed; continuing with display-only mode");
     }
 
     BaseType_t task_ok = xTaskCreatePinnedToCore(
