@@ -16,27 +16,6 @@ extern bool hmi_lvgl_port_init(void);
 
 static hmi_board_status_t s_status;
 
-static void run_backlight_probe_sequence(void)
-{
-    if (!hmi_7b_ioexp_init())
-    {
-        ESP_LOGW(TAG, "Skipping BL probe: IO expander init failed");
-        return;
-    }
-
-    ESP_LOGW(TAG, "BL probe: toggling IO2 low/high and PWM 0/247 (3 cycles)");
-    for (int i = 0; i < 3; ++i)
-    {
-        (void)hmi_7b_ioexp_set_backlight_pwm(0);
-        (void)hmi_7b_ioexp_set_output_bit(2, false);
-        vTaskDelay(pdMS_TO_TICKS(300));
-
-        (void)hmi_7b_ioexp_set_backlight_pwm(247);
-        (void)hmi_7b_ioexp_set_output_bit(2, true);
-        vTaskDelay(pdMS_TO_TICKS(300));
-    }
-}
-
 static bool enable_backlight(void)
 {
     if (!hmi_7b_ioexp_init())
@@ -55,8 +34,6 @@ bool hmi_board_init(void)
     {
         ESP_LOGW(TAG, "7B IO expander not detected");
     }
-
-    run_backlight_probe_sequence();
 
     /* Strict replacement order from 7B docs: IO expander -> backlight on -> LCD reset. */
     s_status.backlight_enabled = enable_backlight();
@@ -81,7 +58,7 @@ bool hmi_board_init(void)
         ESP_LOGW(TAG, "Display/LVGL init failed");
     }
 
-    /* Re-assert BL after panel init as Waveshare examples do via helper call sites. */
+    /* Re-assert BL after panel init so panel reset does not leave BL gate off. */
     s_status.backlight_enabled = enable_backlight() || s_status.backlight_enabled;
 
     s_status.touch_present = hmi_7b_touch_detect();
@@ -96,7 +73,7 @@ bool hmi_board_init(void)
         ESP_LOGW(TAG, "Touch controller not detected");
     }
 
-    ESP_LOGI(TAG, "Bring-up status: backlight=%d touch=%d panel=%d",
+    ESP_LOGI(TAG, "HMI status: backlight=%d touch=%d panel=%d",
              s_status.backlight_enabled,
              s_status.touch_present,
              s_status.panel_ready);
