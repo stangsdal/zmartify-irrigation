@@ -1,0 +1,5 @@
+version: 0.1.0
+description: Waveshare ESP32-S3-Touch-LCD-7B board bring-up layer (display/touch scaffolding)
+dependencies:
+  lvgl/lvgl:
+    version: "8.4.0"

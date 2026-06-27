@@ -6,6 +6,7 @@
 
 #include "hal.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "driver/i2c_master.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -16,6 +17,43 @@ static const char *TAG = "hal_i2c";
 static i2c_master_bus_handle_t s_bus_handle = NULL;
 static SemaphoreHandle_t       s_bus_mutex  = NULL;
 static bool                    s_initialized = false;
+static int64_t                 s_last_warn_us = 0;
+static uint32_t                s_warn_suppressed = 0;
+
+#define I2C_WARN_THROTTLE_US   (5 * 1000 * 1000)
+
+static void log_i2c_error_throttled(const char *op, uint8_t addr, int reg, esp_err_t err)
+{
+    int64_t now_us = esp_timer_get_time();
+    if ((now_us - s_last_warn_us) < I2C_WARN_THROTTLE_US)
+    {
+        s_warn_suppressed++;
+        return;
+    }
+
+    if (reg >= 0)
+    {
+        ESP_LOGW(TAG,
+                 "%s 0x%02X reg=0x%02X failed: %d (%lu suppressed)",
+                 op,
+                 addr,
+                 (unsigned)reg,
+                 err,
+                 (unsigned long)s_warn_suppressed);
+    }
+    else
+    {
+        ESP_LOGW(TAG,
+                 "%s 0x%02X failed: %d (%lu suppressed)",
+                 op,
+                 addr,
+                 err,
+                 (unsigned long)s_warn_suppressed);
+    }
+
+    s_last_warn_us = now_us;
+    s_warn_suppressed = 0;
+}
 
 hal_result_t hal_i2c_init(void)
 {
@@ -108,7 +146,7 @@ hal_result_t hal_i2c_write(uint8_t addr, const uint8_t *data, size_t len)
 
     if (err != ESP_OK)
     {
-        ESP_LOGW(TAG, "write to 0x%02X failed: %d", addr, err);
+        log_i2c_error_throttled("write", addr, -1, err);
         return HAL_IO_ERROR;
     }
     return HAL_OK;
@@ -143,7 +181,7 @@ hal_result_t hal_i2c_read(uint8_t addr, uint8_t *buf, size_t len)
 
     if (err != ESP_OK)
     {
-        ESP_LOGW(TAG, "read from 0x%02X failed: %d", addr, err);
+        log_i2c_error_throttled("read", addr, -1, err);
         return HAL_IO_ERROR;
     }
     return HAL_OK;
@@ -180,7 +218,7 @@ hal_result_t hal_i2c_write_read(uint8_t addr, uint8_t reg,
 
     if (err != ESP_OK)
     {
-        ESP_LOGW(TAG, "write_read 0x%02X reg=0x%02X failed: %d", addr, reg, err);
+        log_i2c_error_throttled("write_read", addr, reg, err);
         return HAL_IO_ERROR;
     }
     return HAL_OK;

@@ -13,6 +13,7 @@
 #include "freertos/task.h"
 #include "event_bus.h"
 #include "hal.h"
+#include "hmi_board.h"
 #include "config_manager.h"
 #include "relay_manager.h"
 #include "zone_manager.h"
@@ -68,6 +69,21 @@ static void system_init_task(void *arg)
     {
         ESP_LOGI(TAG, "HAL initialized successfully");
         event_bus_publish(EVENT_SYSTEM_BOOT, 0, EVENT_PRIORITY_NORMAL, 0, NULL, 0);
+    }
+
+    ESP_LOGI(TAG, "[Step 3.1] Initializing HMI board bring-up...");
+    if (!hmi_board_init())
+    {
+        ESP_LOGW(TAG, "HMI board bring-up incomplete (continuing in headless mode)");
+    }
+    else
+    {
+        hmi_board_status_t hmi_status;
+        hmi_board_get_status(&hmi_status);
+        ESP_LOGI(TAG, "HMI bring-up status: backlight=%d touch=%d panel=%d",
+                 hmi_status.backlight_enabled,
+                 hmi_status.touch_present,
+                 hmi_status.panel_ready);
     }
 
     // Step 3: Initialize Configuration Manager
