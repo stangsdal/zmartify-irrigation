@@ -1,0 +1,19 @@
+idf_component_register(
+    SRCS
+        "src/hmi_7b_bus.c"
+        "src/hmi_7b_ioexp.c"
+        "src/hmi_7b_rgb.c"
+        "src/hmi_7b_touch.c"
+        "src/hmi_board.c"
+        "src/hmi_touch.c"
+        "src/hmi_lvgl_port.c"
+    INCLUDE_DIRS "include"
+    REQUIRES
+        esp_common
+        esp_lcd
+        esp_timer
+        driver
+        freertos
+        lvgl
+        zic_hal
+)

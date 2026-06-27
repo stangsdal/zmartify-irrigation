@@ -12,6 +12,7 @@ idf_component_register(SRCS "main.c"
                              et_engine
                              alarm_manager
                              storage_manager
+                             hmi_board
                              mqtt_manager
                              ota_manager
                              diagnostics_manager)
