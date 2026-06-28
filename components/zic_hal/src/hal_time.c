@@ -4,7 +4,10 @@
  */
 
 #include "hal.h"
+#include "esp_err.h"
+#include "esp_event.h"
 #include "esp_log.h"
+#include "esp_netif.h"
 #include "esp_timer.h"
 #include "esp_sntp.h"
 #include <string.h>
@@ -25,6 +28,20 @@ static void sntp_sync_cb(struct timeval *tv)
 
 hal_result_t hal_time_init(const char *tz_posix)
 {
+    esp_err_t err = esp_netif_init();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE)
+    {
+        ESP_LOGE(TAG, "esp_netif_init failed: %s", esp_err_to_name(err));
+        return HAL_IO_ERROR;
+    }
+
+    err = esp_event_loop_create_default();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE)
+    {
+        ESP_LOGE(TAG, "esp_event_loop_create_default failed: %s", esp_err_to_name(err));
+        return HAL_IO_ERROR;
+    }
+
     if (s_initialized)
     {
         return HAL_OK;

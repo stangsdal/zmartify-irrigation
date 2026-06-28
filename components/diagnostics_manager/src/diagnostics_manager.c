@@ -12,6 +12,7 @@
 #include "esp_system.h"
 #include "esp_heap_caps.h"
 #include "esp_ota_ops.h"
+#include "esp_partition.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <stdio.h>
@@ -23,6 +24,27 @@ static const char *TAG = "diag_mgr";
 #define HEAP_CRITICAL_PCT     90u     /**< Heap utilisation above this = unhealthy  */
 
 static bool s_initialized = false;
+
+static bool ota_rollback_supported(void)
+{
+#if defined(CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE) && CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *otadata = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA,
+        ESP_PARTITION_SUBTYPE_DATA_OTA,
+        NULL);
+
+    if (running == NULL || otadata == NULL)
+    {
+        return false;
+    }
+
+    return running->subtype >= ESP_PARTITION_SUBTYPE_APP_OTA_0
+        && running->subtype < ESP_PARTITION_SUBTYPE_APP_OTA_MAX;
+#else
+    return false;
+#endif
+}
 
 /* ─── OTA rollback guard task ─────────────────────────────────────────── */
 
@@ -54,9 +76,17 @@ static void ota_health_check_task(void *arg)
     }
     else
     {
-        ESP_LOGE(TAG, "Health check FAILED – triggering OTA rollback");
         alarm_raise(ALARM_IRRIGATION_FAULT, ALARM_SEV_CRITICAL, 0);
-        esp_ota_mark_app_invalid_rollback_and_reboot();
+
+        if (ota_rollback_supported())
+        {
+            ESP_LOGE(TAG, "Health check FAILED - triggering OTA rollback");
+            esp_ota_mark_app_invalid_rollback_and_reboot();
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Health check FAILED - rollback unavailable (single-app or rollback disabled)");
+        }
     }
 
     vTaskDelete(NULL);

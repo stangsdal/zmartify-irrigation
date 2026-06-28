@@ -34,9 +34,13 @@ typedef struct
 static flow_ch_t s_ch[HAL_FLOW_CHANNEL_COUNT];
 static bool      s_initialized = false;
 
-/* PCNT overflow threshold (use +32767 to catch wrap) */
+/*
+ * PCNT counter range must straddle zero in ESP-IDF v6.
+ * We use [-1, 32767] and accumulate software overflows when reaching high limit.
+ */
 #define PCNT_HIGH_LIMIT  32767
-#define PCNT_LOW_LIMIT   0
+#define PCNT_LOW_LIMIT   -1
+#define PCNT_COUNTER_SPAN (PCNT_HIGH_LIMIT - PCNT_LOW_LIMIT + 1)
 
 static bool IRAM_ATTR pcnt_overflow_cb(pcnt_unit_handle_t unit,
                                         const pcnt_watch_event_data_t *edata,
@@ -48,7 +52,7 @@ static bool IRAM_ATTR pcnt_overflow_cb(pcnt_unit_handle_t unit,
     /* Take lock from ISR context (will not block) */
     if (xSemaphoreTakeFromISR(ch->lock, &woken) == pdTRUE)
     {
-        ch->overflow_count += PCNT_HIGH_LIMIT;
+        ch->overflow_count += PCNT_COUNTER_SPAN;
         xSemaphoreGiveFromISR(ch->lock, &woken);
     }
 
@@ -161,7 +165,12 @@ hal_result_t hal_flow_read(hal_flow_channel_t channel, uint32_t *count)
     pcnt_unit_get_count(s_ch[channel].unit, &hw_count);
 
     xSemaphoreTake(s_ch[channel].lock, portMAX_DELAY);
-    *count = s_ch[channel].overflow_count + (uint32_t)hw_count;
+    int64_t total = (int64_t)s_ch[channel].overflow_count + (int64_t)hw_count;
+    if (total < 0)
+    {
+        total = 0;
+    }
+    *count = (uint32_t)total;
     xSemaphoreGive(s_ch[channel].lock);
 
     return HAL_OK;
@@ -201,7 +210,12 @@ hal_result_t hal_flow_read_reset(hal_flow_channel_t channel, uint32_t *count)
     pcnt_unit_get_count(s_ch[channel].unit, &hw_count);
 
     xSemaphoreTake(s_ch[channel].lock, portMAX_DELAY);
-    *count = s_ch[channel].overflow_count + (uint32_t)hw_count;
+    int64_t total = (int64_t)s_ch[channel].overflow_count + (int64_t)hw_count;
+    if (total < 0)
+    {
+        total = 0;
+    }
+    *count = (uint32_t)total;
     s_ch[channel].overflow_count = 0;
     pcnt_unit_clear_count(s_ch[channel].unit);
     xSemaphoreGive(s_ch[channel].lock);
