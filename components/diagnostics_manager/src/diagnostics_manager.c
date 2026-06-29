@@ -145,7 +145,7 @@ bool diagnostics_get_health(diag_health_t *out)
 
     /* Misc */
     out->reset_reason    = (uint8_t)esp_reset_reason();
-    out->log_entries     = (uint32_t)storage_manager_count();
+    out->log_entries     = (uint32_t)storage_manager_count(NULL);
     out->subsystems_ready = (out->critical_alarms == 0);
 
     return true;

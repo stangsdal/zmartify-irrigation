@@ -5,7 +5,13 @@
 
 static const char *TAG = "hmi_7b_rgb";
 
+#if CONFIG_HMI_DISPLAY_PROFILE_HIGH_THROUGHPUT
+#define LCD_PIXEL_CLOCK_HZ 30850000
+#define LCD_PROFILE_NAME   "high-throughput"
+#else
 #define LCD_PIXEL_CLOCK_HZ 14000000
+#define LCD_PROFILE_NAME   "low-risk"
+#endif
 #define LCD_RGB_DATA_WIDTH 16
 #define LCD_RGB_FB_NUM     2
 
@@ -162,9 +168,11 @@ bool hmi_7b_rgb_init_with_flags(esp_lcd_panel_handle_t *out_panel, const hmi_7b_
 
     *out_panel = panel;
     ESP_LOGI(TAG,
-             "RGB panel ready (%dx%d) flags: hs=%d vs=%d de=%d pneg=%d pidh=%d",
+             "RGB panel ready (%dx%d, pclk=%d, profile=%s) flags: hs=%d vs=%d de=%d pneg=%d pidh=%d",
              HMI_7B_LCD_H_RES,
              HMI_7B_LCD_V_RES,
+             LCD_PIXEL_CLOCK_HZ,
+             LCD_PROFILE_NAME,
              cfg_flags.hsync_idle_low,
              cfg_flags.vsync_idle_low,
              cfg_flags.de_idle_high,

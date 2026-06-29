@@ -3671,6 +3671,13 @@ CONFIG_WL_SECTOR_SIZE=4096
 # end of Wear Levelling
 
 #
+# HMI Board
+#
+# CONFIG_HMI_DISPLAY_PROFILE_LOW_RISK is not set
+CONFIG_HMI_DISPLAY_PROFILE_HIGH_THROUGHPUT=y
+# end of HMI Board
+
+#
 # cJSON
 #
 # default:
@@ -3730,7 +3737,7 @@ CONFIG_LV_COLOR_DEPTH=16
 # default:
 # CONFIG_LV_COLOR_16_SWAP is not set
 # default:
-# CONFIG_LV_COLOR_SCREEN_TRANSP is not set
+CONFIG_LV_COLOR_SCREEN_TRANSP=y
 # default:
 CONFIG_LV_COLOR_MIX_ROUND_OFS=128
 # default:
@@ -3741,15 +3748,13 @@ CONFIG_LV_COLOR_CHROMA_KEY_HEX=0x00FF00
 # Memory settings
 #
 # default:
-# CONFIG_LV_MEM_CUSTOM is not set
+CONFIG_LV_MEM_CUSTOM=y
 # default:
-CONFIG_LV_MEM_SIZE_KILOBYTES=32
-# default:
-CONFIG_LV_MEM_ADDR=0x0
+CONFIG_LV_MEM_CUSTOM_INCLUDE="stdlib.h"
 # default:
 CONFIG_LV_MEM_BUF_MAX_NUM=16
 # default:
-# CONFIG_LV_MEMCPY_MEMSET_STD is not set
+CONFIG_LV_MEMCPY_MEMSET_STD=y
 # end of Memory settings
 
 #
@@ -3839,9 +3844,25 @@ CONFIG_LV_ASSERT_HANDLER_INCLUDE="assert.h"
 # Others
 #
 # default:
-# CONFIG_LV_USE_PERF_MONITOR is not set
+CONFIG_LV_USE_PERF_MONITOR=y
 # default:
-# CONFIG_LV_USE_MEM_MONITOR is not set
+# CONFIG_LV_PERF_MONITOR_ALIGN_TOP_LEFT is not set
+# default:
+# CONFIG_LV_PERF_MONITOR_ALIGN_TOP_MID is not set
+# default:
+# CONFIG_LV_PERF_MONITOR_ALIGN_TOP_RIGHT is not set
+# default:
+# CONFIG_LV_PERF_MONITOR_ALIGN_BOTTOM_LEFT is not set
+# default:
+# CONFIG_LV_PERF_MONITOR_ALIGN_BOTTOM_MID is not set
+# default:
+CONFIG_LV_PERF_MONITOR_ALIGN_BOTTOM_RIGHT=y
+# default:
+# CONFIG_LV_PERF_MONITOR_ALIGN_LEFT_MID is not set
+# default:
+# CONFIG_LV_PERF_MONITOR_ALIGN_RIGHT_MID is not set
+# default:
+# CONFIG_LV_PERF_MONITOR_ALIGN_CENTER is not set
 # default:
 # CONFIG_LV_USE_REFR_DEBUG is not set
 # default:
@@ -3862,7 +3883,7 @@ CONFIG_LV_USE_USER_DATA=y
 # default:
 CONFIG_LV_ATTRIBUTE_MEM_ALIGN_SIZE=1
 # default:
-# CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM is not set
+CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y
 # default:
 # CONFIG_LV_USE_LARGE_COORD is not set
 # end of Compiler settings
@@ -3880,19 +3901,19 @@ CONFIG_LV_ATTRIBUTE_MEM_ALIGN_SIZE=1
 # default:
 # CONFIG_LV_FONT_MONTSERRAT_10 is not set
 # default:
-# CONFIG_LV_FONT_MONTSERRAT_12 is not set
+CONFIG_LV_FONT_MONTSERRAT_12=y
 # default:
 CONFIG_LV_FONT_MONTSERRAT_14=y
 # default:
-# CONFIG_LV_FONT_MONTSERRAT_16 is not set
+CONFIG_LV_FONT_MONTSERRAT_16=y
 # default:
 # CONFIG_LV_FONT_MONTSERRAT_18 is not set
 # default:
-# CONFIG_LV_FONT_MONTSERRAT_20 is not set
+CONFIG_LV_FONT_MONTSERRAT_20=y
 # default:
 # CONFIG_LV_FONT_MONTSERRAT_22 is not set
 # default:
-# CONFIG_LV_FONT_MONTSERRAT_24 is not set
+CONFIG_LV_FONT_MONTSERRAT_24=y
 # default:
 # CONFIG_LV_FONT_MONTSERRAT_26 is not set
 # default:
@@ -3912,7 +3933,7 @@ CONFIG_LV_FONT_MONTSERRAT_14=y
 # default:
 # CONFIG_LV_FONT_MONTSERRAT_42 is not set
 # default:
-# CONFIG_LV_FONT_MONTSERRAT_44 is not set
+CONFIG_LV_FONT_MONTSERRAT_44=y
 # default:
 # CONFIG_LV_FONT_MONTSERRAT_46 is not set
 # default:
