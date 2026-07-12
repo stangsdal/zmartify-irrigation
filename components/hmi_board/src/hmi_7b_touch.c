@@ -167,14 +167,15 @@ bool hmi_7b_touch_read(uint16_t *x, uint16_t *y, bool *pressed)
     uint8_t points = status & 0x0FU;
     if (points > 0)
     {
+        /* GT911 point packet at 0x814F: [id, x_l, x_h, y_l, y_h, size_l, size_h, reserved]. */
         uint8_t raw[8] = {0};
         if (!hmi_7b_bus_read_reg16(s_touch_addr, GT911_REG_FIRST_POINT, raw, sizeof(raw)))
         {
             return false;
         }
 
-        *x = (uint16_t)(((uint16_t)raw[1] << 8) | raw[0]);
-        *y = (uint16_t)(((uint16_t)raw[3] << 8) | raw[2]);
+        *x = (uint16_t)(((uint16_t)raw[2] << 8) | raw[1]);
+        *y = (uint16_t)(((uint16_t)raw[4] << 8) | raw[3]);
         *pressed = true;
     }
 

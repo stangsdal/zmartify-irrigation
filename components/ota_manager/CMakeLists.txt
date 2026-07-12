@@ -1,9 +1,5 @@
 idf_component_register(
     SRCS "src/ota_manager.c"
     INCLUDE_DIRS "include"
-    REQUIRES
-        esp_https_ota
-        app_update
-        event_bus
-        esp_common
+    REQUIRES esp_https_ota app_update
 )
