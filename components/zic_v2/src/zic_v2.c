@@ -31,6 +31,15 @@ bool zic_v2_outcome_topic(const char *device_id, char *out, size_t out_len)
     return written > 0 && (size_t)written < out_len;
 }
 
+bool zic_v2_state_topic(const char *device_id, char *out, size_t out_len)
+{
+    if (device_id == NULL || out == NULL) {
+        return false;
+    }
+    int written = snprintf(out, out_len, "zmartify/v2/devices/%s/state/reported", device_id);
+    return written > 0 && (size_t)written < out_len;
+}
+
 bool zic_v2_command_filter(const char *device_id, char *out, size_t out_len)
 {
     if (device_id == NULL || out == NULL) {

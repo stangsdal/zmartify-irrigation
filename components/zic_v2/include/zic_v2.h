@@ -32,6 +32,9 @@ extern "C" {
 /** Build the v2 outcome event topic for this device. */
 bool zic_v2_outcome_topic(const char *device_id, char *out, size_t out_len);
 
+/** Build the v2 reported-state topic for this device. */
+bool zic_v2_state_topic(const char *device_id, char *out, size_t out_len);
+
 /** Build the v2 command subscription filter (irrigation commands). */
 bool zic_v2_command_filter(const char *device_id, char *out, size_t out_len);
 

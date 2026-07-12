@@ -19,6 +19,8 @@
 #include "storage_manager.h"
 #include "weather_manager.h"
 #include "hmi_board.h"
+#include "zic_v2.h"
+#include <time.h>
 
 static const char *TAG = "zic_main";
 static zic_log_entry_t s_log_buffer[128];
@@ -34,6 +36,10 @@ static zic_log_entry_t s_log_buffer[128];
 
 #define ZIC_DEFAULT_BROKER_URI "mqtt://192.168.10.2:1883"
 #define ZIC_DEFAULT_CLIENT_ID "zic-controller-01"
+
+/* Device identity for Zmartify v2 topics; must match the edge registry
+ * device_id assigned during onboarding (lowercase, hyphenated). */
+#define ZIC_V2_DEVICE_ID "zmartify-irrigation-01"
 
 typedef enum {
     ZIC_CMD_START_ZONE = 0,
@@ -76,7 +82,20 @@ static const char *s_command_topics[] = {
     ZIC_MQTT_ROOT "/command/run_program",
     ZIC_MQTT_ROOT "/command/stop_all",
     ZIC_MQTT_ROOT "/command/rain_delay",
+    "zmartify/v2/devices/" ZIC_V2_DEVICE_ID "/commands/irrigation/#",
 };
+
+static char s_v2_state_topic[128];
+static char s_v2_outcome_topic[128];
+static char s_v2_last_command_id[40];
+
+static void zic_v2_now_iso(char *out, size_t out_len)
+{
+    time_t now = time(NULL);
+    struct tm tm_utc;
+    gmtime_r(&now, &tm_utc);
+    (void)strftime(out, out_len, "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+}
 
 static size_t zic_copy_to_cstr(char *dst, size_t dst_len, const char *src, size_t src_len)
 {
@@ -169,6 +188,69 @@ static void zic_mqtt_on_message(const char *topic,
     value = 0;
     runtime_seconds = 300;
     zic_copy_to_cstr(topic_buf, sizeof(topic_buf), topic, topic_len);
+
+    /* Zmartify v2 command envelope: route by trailing segment and unwrap
+     * command_id + parameters before dispatching to the same command queue. */
+    const char *v2_prefix = "zmartify/v2/devices/" ZIC_V2_DEVICE_ID "/commands/irrigation/";
+    if (strncmp(topic_buf, v2_prefix, strlen(v2_prefix)) == 0) {
+        const char *action = topic_buf + strlen(v2_prefix);
+        json = zic_parse_json_payload(payload, payload_len, json_scratch, sizeof(json_scratch));
+        if (json == NULL) {
+            ESP_LOGW(TAG, "Invalid v2 command payload for %s", action);
+            return;
+        }
+
+        const cJSON *command_id = cJSON_GetObjectItemCaseSensitive(json, "command_id");
+        if (cJSON_IsString(command_id) && command_id->valuestring != NULL) {
+            strncpy(s_v2_last_command_id, command_id->valuestring, sizeof(s_v2_last_command_id) - 1U);
+            s_v2_last_command_id[sizeof(s_v2_last_command_id) - 1U] = '\0';
+        }
+
+        const cJSON *parameters = cJSON_GetObjectItemCaseSensitive(json, "parameters");
+        const cJSON *scope = cJSON_IsObject(parameters) ? parameters : json;
+
+        bool queued = false;
+        if (strcmp(action, "zone/start") == 0 || strcmp(action, "start_zone") == 0) {
+            if (zic_get_json_u32(scope, "zone_id", &value) && value >= 1 && value <= ZIC_MAX_ZONES) {
+                cmd.type = ZIC_CMD_START_ZONE;
+                cmd.zone_id = (uint8_t)value;
+                cmd.runtime_seconds = 300;
+                if (zic_get_json_u32(scope, "duration_seconds", &runtime_seconds) ||
+                    zic_get_json_u32(scope, "runtime_seconds", &runtime_seconds)) {
+                    cmd.runtime_seconds = runtime_seconds;
+                }
+                queued = true;
+            }
+        } else if (strcmp(action, "zone/stop") == 0 || strcmp(action, "stop_zone") == 0) {
+            if (zic_get_json_u32(scope, "zone_id", &value) && value >= 1 && value <= ZIC_MAX_ZONES) {
+                cmd.type = ZIC_CMD_STOP_ZONE;
+                cmd.zone_id = (uint8_t)value;
+                queued = true;
+            }
+        } else if (strcmp(action, "stop_all") == 0) {
+            cmd.type = ZIC_CMD_STOP_ALL;
+            queued = true;
+        } else if (strcmp(action, "rain_delay") == 0) {
+            if (zic_get_json_u32(scope, "delay_hours", &value) || zic_get_json_u32(scope, "hours", &value)) {
+                if (value == 0) {
+                    cmd.type = ZIC_CMD_CLEAR_RAIN_DELAY;
+                } else {
+                    cmd.type = ZIC_CMD_SET_RAIN_DELAY;
+                    cmd.rain_delay_hours = (uint16_t)value;
+                }
+                queued = true;
+            }
+        }
+
+        cJSON_Delete(json);
+        if (queued) {
+            xQueueSend(s_command_queue, &cmd, 0);
+        } else {
+            ESP_LOGW(TAG, "Unsupported or invalid v2 command: %s", action);
+        }
+        return;
+    }
+
     if (!zic_mqtt_command_from_topic(topic_buf, &mqtt_cmd)) {
         return;
     }
@@ -292,6 +374,8 @@ static void zic_runtime_init_context(zic_app_context_t *ctx)
     ctx->weather_snapshot.temperature_c = 33.0f;
     ctx->weather_snapshot.wind_speed_mps = 3.0f;
     zic_mqtt_topic_build("state", ctx->state_topic, sizeof(ctx->state_topic));
+    zic_v2_state_topic(ZIC_V2_DEVICE_ID, s_v2_state_topic, sizeof(s_v2_state_topic));
+    zic_v2_outcome_topic(ZIC_V2_DEVICE_ID, s_v2_outcome_topic, sizeof(s_v2_outcome_topic));
 
     mqtt_transport_config_t mqtt_cfg = {
         .broker_uri = ZIC_DEFAULT_BROKER_URI,
@@ -308,25 +392,53 @@ static void zic_runtime_init_context(zic_app_context_t *ctx)
     }
 }
 
+static void zic_publish_v2_outcome(zic_app_context_t *ctx,
+                                   const char *event_type,
+                                   const char *severity,
+                                   const char *result,
+                                   const char *detail,
+                                   int zone_id)
+{
+    char stamp[32];
+    char payload[512];
+
+    if (!mqtt_transport_is_connected(&ctx->mqtt_transport)) {
+        return;
+    }
+
+    zic_v2_now_iso(stamp, sizeof(stamp));
+    if (!zic_v2_build_outcome(payload, sizeof(payload), stamp, event_type, severity, result, detail,
+                              s_v2_last_command_id[0] != '\0' ? s_v2_last_command_id : NULL,
+                              NULL, zone_id)) {
+        return;
+    }
+    (void)mqtt_transport_publish(&ctx->mqtt_transport, s_v2_outcome_topic, payload, 1, false);
+}
+
 static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_command_t *cmd)
 {
     switch (cmd->type) {
     case ZIC_CMD_START_ZONE:
         irrigation_engine_start_zone(&ctx->engine, cmd->zone_id, cmd->runtime_seconds);
+        zic_publish_v2_outcome(ctx, "run.started", "info", "accepted", NULL, cmd->zone_id);
         break;
     case ZIC_CMD_STOP_ZONE:
         irrigation_engine_stop_zone(&ctx->engine, cmd->zone_id);
+        zic_publish_v2_outcome(ctx, "run.stopped", "info", "completed", NULL, cmd->zone_id);
         break;
     case ZIC_CMD_STOP_ALL:
         irrigation_engine_stop_all(&ctx->engine);
+        zic_publish_v2_outcome(ctx, "run.stopped", "info", "completed", "stop_all", 0);
         break;
     case ZIC_CMD_SET_RAIN_DELAY:
         persistent_store_set_u32("rain_delay_h", cmd->rain_delay_hours);
         zic_controller_apply_event(&ctx->engine.controller, ZIC_EV_RAIN_DELAY_SET, -1);
+        zic_publish_v2_outcome(ctx, "rain.delay_set", "info", "accepted", NULL, 0);
         break;
     case ZIC_CMD_CLEAR_RAIN_DELAY:
         persistent_store_set_u32("rain_delay_h", 0);
         zic_controller_apply_event(&ctx->engine.controller, ZIC_EV_RAIN_DELAY_CLEAR, -1);
+        zic_publish_v2_outcome(ctx, "rain.delay_cleared", "info", "accepted", NULL, 0);
         break;
     case ZIC_CMD_TRIGGER_OTA: {
         ota_manager_config_t ota_cfg = {
@@ -418,6 +530,29 @@ static void zic_telemetry_task(void *arg)
                                    csv_line,
                                    ZIC_MQTT_QOS_TELEMETRY,
                                    false);
+
+            /* Zmartify v2 reported-state (schema mqtt-v2/reported-state). */
+            char stamp[32];
+            char v2_payload[512];
+            zic_v2_now_iso(stamp, sizeof(stamp));
+            zic_v2_hydraulics_t hyd = {
+                .flow_lpm = (double)s_ctx.flow_manager.current_lpm_x100 / 100.0,
+                .pressure_bar = (double)s_ctx.pressure_manager.current_pressure_mbar / 1000.0,
+                .water_liters = -1.0,
+            };
+            zic_v2_weather_t wx = {
+                .temperature_c = (double)s_ctx.weather_snapshot.temperature_c,
+                .rain_mm = (double)s_ctx.weather_snapshot.rain_mm_last_24h,
+                .wind_mps = (double)s_ctx.weather_snapshot.wind_speed_mps,
+                .eto_mm = (double)s_ctx.et_output.daily_et_mm,
+            };
+            if (zic_v2_build_reported_state(v2_payload, sizeof(v2_payload), stamp, NULL, &hyd, NULL, &wx)) {
+                mqtt_transport_publish(&s_ctx.mqtt_transport,
+                                       s_v2_state_topic,
+                                       v2_payload,
+                                       ZIC_MQTT_QOS_TELEMETRY,
+                                       false);
+            }
         }
         xSemaphoreGive(s_ctx_lock);
 

@@ -12,4 +12,5 @@ idf_component_register(SRCS "main.c"
                              persistent_store
                              pressure_manager
                              storage_manager
-                             weather_manager)
+                             weather_manager
+                             zic_v2)
