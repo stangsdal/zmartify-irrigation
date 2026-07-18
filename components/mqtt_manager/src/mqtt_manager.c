@@ -64,7 +64,7 @@ static void publish_telemetry(void)
              "{\"flow_lpm\":%.2f,\"pressure_bar\":%.2f,\"logs\":%u}",
              flow_manager_get_rate_lpm(),
              pressure_manager_get_bar(),
-             (unsigned)storage_manager_count());
+             (unsigned)storage_manager_count(NULL));
     safe_publish(TOPIC_TELEMETRY, buf, 0, 0);
 }
 

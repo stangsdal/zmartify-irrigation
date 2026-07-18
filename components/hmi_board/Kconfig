@@ -1,0 +1,21 @@
+menu "HMI Board"
+
+choice HMI_DISPLAY_PROFILE
+    prompt "HMI display profile"
+    default HMI_DISPLAY_PROFILE_HIGH_THROUGHPUT
+    help
+        Select the display timing profile for the 7B RGB panel.
+
+config HMI_DISPLAY_PROFILE_LOW_RISK
+    bool "Low risk (14 MHz pixel clock)"
+    help
+        Conservative profile with lower pixel clock for maximum signal margin.
+
+config HMI_DISPLAY_PROFILE_HIGH_THROUGHPUT
+    bool "High throughput (30.85 MHz pixel clock)"
+    help
+        Matches the Waveshare/LVGL example timing for smoother full-screen UI.
+
+endchoice
+
+endmenu
