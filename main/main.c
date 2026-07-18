@@ -1,4 +1,13 @@
 #include "esp_log.h"
+#include "esp_netif.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_http_server.h"
+#include "esp_mac.h"
+#include "esp_ota_ops.h"
+#include "esp_system.h"
+#include "esp_timer.h"
+#include "nvs_flash.h"
 #include <stdlib.h>
 #include <string.h>
 #include "cJSON.h"
@@ -8,19 +17,35 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "alarm_manager.h"
+#include "config_manager.h"
 #include "et_engine.h"
+#include "event_bus.h"
 #include "flow_manager.h"
+#include "hal.h"
 #include "irrigation_engine.h"
 #include "mqtt_topic.h"
 #include "mqtt_transport.h"
 #include "ota_manager.h"
 #include "persistent_store.h"
 #include "pressure_manager.h"
+#include "relay_manager.h"
 #include "storage_manager.h"
 #include "weather_manager.h"
+#include "watersensor_client.h"
 #include "hmi_board.h"
 #include "zic_v2.h"
 #include <time.h>
+
+#if __has_include("wifi_credentials.local.h")
+#include "wifi_credentials.local.h"
+#else
+static const uint8_t zic_wifi_ssid[] = {0};
+static const uint8_t zic_wifi_password[] = {0};
+#endif
+
+#ifndef ZIC_RELAY_SELF_TEST
+#define ZIC_RELAY_SELF_TEST 0
+#endif
 
 static const char *TAG = "zic_main";
 static zic_log_entry_t s_log_buffer[128];
@@ -28,8 +53,10 @@ static zic_log_entry_t s_log_buffer[128];
 #define ZIC_CMD_QUEUE_LEN 16
 #define ZIC_CTRL_TASK_STACK 6144
 #define ZIC_TELEM_TASK_STACK 4096
+#define ZIC_WATERSENSOR_TASK_STACK 4096
 #define ZIC_CTRL_TASK_PRIO 8
 #define ZIC_TELEM_TASK_PRIO 5
+#define ZIC_WATERSENSOR_TASK_PRIO 9
 
 #define ZIC_EVENT_ENGINE_READY BIT0
 #define ZIC_EVENT_FAULT BIT1
@@ -69,12 +96,24 @@ typedef struct {
     et_output_t et_output;
     char state_topic[ZIC_MQTT_TOPIC_MAX];
     mqtt_transport_t mqtt_transport;
+    bool scheduled_program_active;
+    uint8_t scheduled_program_index;
+    uint8_t scheduled_next_zone_index;
+    config_program_t scheduled_program;
+    uint32_t last_program_trigger_minute[CONFIG_MAX_PROGRAMS];
+    flow_supervision_config_t flow_supervision;
+    pressure_supervision_config_t pressure_supervision;
+    config_hydraulic_t hydraulic_config;
+    bool pressure_available;
+    bool safety_fault_latched;
 } zic_app_context_t;
 
 static zic_app_context_t s_ctx;
 static QueueHandle_t s_command_queue;
 static EventGroupHandle_t s_runtime_events;
 static SemaphoreHandle_t s_ctx_lock;
+static SemaphoreHandle_t s_watersensor_lock;
+static watersensor_client_t s_watersensor;
 
 static const char *s_command_topics[] = {
     ZIC_MQTT_ROOT "/command/start_zone",
@@ -82,12 +121,177 @@ static const char *s_command_topics[] = {
     ZIC_MQTT_ROOT "/command/run_program",
     ZIC_MQTT_ROOT "/command/stop_all",
     ZIC_MQTT_ROOT "/command/rain_delay",
+    ZIC_MQTT_ROOT "/command/ota",
     "zmartify/v2/devices/" ZIC_V2_DEVICE_ID "/commands/irrigation/#",
 };
 
 static char s_v2_state_topic[128];
 static char s_v2_outcome_topic[128];
 static char s_v2_last_command_id[40];
+static httpd_handle_t s_ota_http_server;
+
+static void zic_ota_restart_task(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+}
+
+static esp_err_t zic_ota_http_handler(httpd_req_t *request)
+{
+    const esp_partition_t *partition = esp_ota_get_next_update_partition(NULL);
+    if (partition == NULL || request->content_len <= 0 ||
+        (size_t)request->content_len > partition->size) {
+        httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid firmware size");
+        return ESP_FAIL;
+    }
+
+    esp_ota_handle_t ota_handle = 0;
+    esp_err_t err = esp_ota_begin(partition, request->content_len, &ota_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Direct OTA begin failed: %s", esp_err_to_name(err));
+        httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA begin failed");
+        return ESP_FAIL;
+    }
+
+    char buffer[4096];
+    int remaining = request->content_len;
+    while (remaining > 0) {
+        int received = httpd_req_recv(request, buffer,
+                                      remaining < (int)sizeof(buffer) ? remaining : (int)sizeof(buffer));
+        if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+            continue;
+        }
+        if (received <= 0) {
+            ESP_LOGE(TAG, "Direct OTA upload interrupted");
+            esp_ota_abort(ota_handle);
+            return ESP_FAIL;
+        }
+
+        err = esp_ota_write(ota_handle, buffer, received);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Direct OTA write failed: %s", esp_err_to_name(err));
+            esp_ota_abort(ota_handle);
+            httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA write failed");
+            return ESP_FAIL;
+        }
+        remaining -= received;
+    }
+
+    err = esp_ota_end(ota_handle);
+    if (err == ESP_OK) {
+        err = esp_ota_set_boot_partition(partition);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Direct OTA image validation failed: %s", esp_err_to_name(err));
+        httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid firmware image");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Direct OTA complete; rebooting into %s", partition->label);
+    httpd_resp_set_type(request, "text/plain");
+    httpd_resp_sendstr(request, "OTA complete; rebooting\n");
+    xTaskCreate(zic_ota_restart_task, "ota_restart", 2048, NULL, 5, NULL);
+    return ESP_OK;
+}
+
+static bool zic_ota_http_start(void)
+{
+    if (s_ota_http_server != NULL) {
+        return true;
+    }
+
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.stack_size = 8192;
+    esp_err_t err = httpd_start(&s_ota_http_server, &config);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Direct OTA HTTP server failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    const httpd_uri_t ota_uri = {
+        .uri = "/ota",
+        .method = HTTP_POST,
+        .handler = zic_ota_http_handler,
+    };
+    err = httpd_register_uri_handler(s_ota_http_server, &ota_uri);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Direct OTA endpoint registration failed: %s", esp_err_to_name(err));
+        httpd_stop(s_ota_http_server);
+        s_ota_http_server = NULL;
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Direct OTA ready: POST /ota");
+    return true;
+}
+
+static void zic_wifi_event_handler(void *arg,
+                                   esp_event_base_t event_base,
+                                   int32_t event_id,
+                                   void *event_data)
+{
+    (void)arg;
+
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        ESP_LOGI(TAG, "Wi-Fi connecting");
+        (void)esp_wifi_connect();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        const wifi_event_sta_disconnected_t *event =
+            (const wifi_event_sta_disconnected_t *)event_data;
+        ESP_LOGW(TAG, "Wi-Fi disconnected (reason=%u); reconnecting", event->reason);
+        (void)esp_wifi_connect();
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        const ip_event_got_ip_t *event = (const ip_event_got_ip_t *)event_data;
+        ESP_LOGI(TAG, "Wi-Fi connected, IP=" IPSTR, IP2STR(&event->ip_info.ip));
+        (void)zic_ota_http_start();
+    }
+}
+
+static bool zic_wifi_init(void)
+{
+    if (zic_wifi_ssid[0] == 0) {
+        ESP_LOGW(TAG, "Wi-Fi credentials not provisioned; run scripts/configure-wifi.sh");
+        return false;
+    }
+
+    esp_err_t err = esp_event_loop_create_default();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_event_loop_create_default failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    if (esp_netif_create_default_wifi_sta() == NULL) {
+        ESP_LOGE(TAG, "Failed to create Wi-Fi STA interface");
+        return false;
+    }
+
+    wifi_init_config_t init_config = WIFI_INIT_CONFIG_DEFAULT();
+    if (esp_wifi_init(&init_config) != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_init failed");
+        return false;
+    }
+
+    (void)esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, zic_wifi_event_handler, NULL);
+    (void)esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, zic_wifi_event_handler, NULL);
+
+    wifi_config_t wifi_config = {0};
+    memcpy(wifi_config.sta.ssid, zic_wifi_ssid, sizeof(zic_wifi_ssid) - 1U);
+    memcpy(wifi_config.sta.password, zic_wifi_password, sizeof(zic_wifi_password) - 1U);
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    wifi_config.sta.pmf_cfg.capable = true;
+    wifi_config.sta.pmf_cfg.required = false;
+
+    if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK ||
+        esp_wifi_set_config(WIFI_IF_STA, &wifi_config) != ESP_OK ||
+        esp_wifi_start() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start Wi-Fi STA");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Wi-Fi STA started for SSID '%s'", (const char *)zic_wifi_ssid);
+    return true;
+}
 
 static void zic_v2_now_iso(char *out, size_t out_len)
 {
@@ -188,6 +392,26 @@ static void zic_mqtt_on_message(const char *topic,
     value = 0;
     runtime_seconds = 300;
     zic_copy_to_cstr(topic_buf, sizeof(topic_buf), topic, topic_len);
+
+    if (strcmp(topic_buf, ZIC_MQTT_ROOT "/command/ota") == 0) {
+        json = zic_parse_json_payload(payload, payload_len, json_scratch, sizeof(json_scratch));
+        if (json == NULL) {
+            ESP_LOGW(TAG, "Invalid OTA command payload");
+            return;
+        }
+
+        const cJSON *url = cJSON_GetObjectItemCaseSensitive(json, "url");
+        if (cJSON_IsString(url) && url->valuestring != NULL && url->valuestring[0] != '\0') {
+            cmd.type = ZIC_CMD_TRIGGER_OTA;
+            strncpy(cmd.ota_url, url->valuestring, sizeof(cmd.ota_url) - 1U);
+            cmd.ota_url[sizeof(cmd.ota_url) - 1U] = '\0';
+            (void)xQueueSend(s_command_queue, &cmd, 0);
+        } else {
+            ESP_LOGW(TAG, "OTA command requires a non-empty url");
+        }
+        cJSON_Delete(json);
+        return;
+    }
 
     /* Zmartify v2 command envelope: route by trailing segment and unwrap
      * command_id + parameters before dispatching to the same command queue. */
@@ -363,7 +587,21 @@ static void zic_runtime_init_context(zic_app_context_t *ctx)
     irrigation_engine_init(&ctx->engine);
     alarm_manager_init(&ctx->alarm_manager);
     flow_manager_init(&ctx->flow_manager);
-    pressure_manager_init(&ctx->pressure_manager, 2000, 7000);
+    config_alarms_t alarm_config;
+    (void)config_get_alarms(&alarm_config);
+    (void)config_get_hydraulics(&ctx->hydraulic_config);
+    pressure_manager_init(&ctx->pressure_manager,
+                          alarm_config.pressure_low_mbar,
+                          alarm_config.pressure_high_mbar);
+    ctx->pressure_supervision.low_pressure_mbar = alarm_config.pressure_low_mbar;
+    ctx->pressure_supervision.high_pressure_mbar = alarm_config.pressure_high_mbar;
+    ctx->pressure_supervision.critical_duration_ms = 5000;
+    ctx->flow_supervision.low_flow_lpm_x100 = (uint32_t)alarm_config.flow_low_lpm_x10 * 10u;
+    ctx->flow_supervision.high_flow_lpm_x100 = (uint32_t)alarm_config.flow_high_lpm_x10 * 10u;
+    ctx->flow_supervision.no_flow_timeout_ms = alarm_config.no_flow_timeout_s * 1000u;
+    ctx->flow_supervision.high_flow_duration_ms = alarm_config.high_flow_duration_s * 1000u;
+    ctx->flow_supervision.active_max_age_ms = 1500;
+    ctx->flow_supervision.idle_max_age_ms = 5000;
     storage_manager_init(&ctx->storage_manager, s_log_buffer, 128);
     flow_manager_set_baseline(&ctx->flow_manager, baseline_flow);
 
@@ -415,22 +653,59 @@ static void zic_publish_v2_outcome(zic_app_context_t *ctx,
     (void)mqtt_transport_publish(&ctx->mqtt_transport, s_v2_outcome_topic, payload, 1, false);
 }
 
+static bool zic_runtime_start_zone(zic_app_context_t *ctx,
+                                   uint8_t zone_id,
+                                   uint32_t requested_runtime_seconds)
+{
+    config_zone_t zone;
+    config_system_t system;
+    if (zone_id == 0 || config_get_zone(zone_id - 1, &zone) != CFG_OK ||
+        config_get_system(&system) != CFG_OK || !zone.enabled ||
+        system.operational_mode == CONFIG_MODE_OFF) {
+        return false;
+    }
+
+    uint32_t runtime_seconds = requested_runtime_seconds;
+    if (runtime_seconds == 0) {
+        runtime_seconds = zone.default_runtime_s;
+    }
+    if (runtime_seconds > zone.max_runtime_s) {
+        runtime_seconds = zone.max_runtime_s;
+    }
+    if (runtime_seconds > system.global_max_runtime_s) {
+        runtime_seconds = system.global_max_runtime_s;
+    }
+
+    return irrigation_engine_start_zone(&ctx->engine, zone_id, zone.relay_index,
+                                        runtime_seconds,
+                                        (uint64_t)(esp_timer_get_time() / 1000));
+}
+
 static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_command_t *cmd)
 {
     switch (cmd->type) {
-    case ZIC_CMD_START_ZONE:
-        irrigation_engine_start_zone(&ctx->engine, cmd->zone_id, cmd->runtime_seconds);
-        zic_publish_v2_outcome(ctx, "run.started", "info", "accepted", NULL, cmd->zone_id);
+    case ZIC_CMD_START_ZONE: {
+        if (zic_runtime_start_zone(ctx, cmd->zone_id, cmd->runtime_seconds)) {
+            zic_publish_v2_outcome(ctx, "run.started", "info", "accepted", NULL, cmd->zone_id);
+        } else {
+            zic_publish_v2_outcome(ctx, "run.rejected", "warning", "rejected",
+                                   "controller_not_idle", cmd->zone_id);
+        }
         break;
+    }
     case ZIC_CMD_STOP_ZONE:
+        ctx->scheduled_program_active = false;
         irrigation_engine_stop_zone(&ctx->engine, cmd->zone_id);
         zic_publish_v2_outcome(ctx, "run.stopped", "info", "completed", NULL, cmd->zone_id);
         break;
     case ZIC_CMD_STOP_ALL:
+        ctx->scheduled_program_active = false;
         irrigation_engine_stop_all(&ctx->engine);
         zic_publish_v2_outcome(ctx, "run.stopped", "info", "completed", "stop_all", 0);
         break;
     case ZIC_CMD_SET_RAIN_DELAY:
+        ctx->scheduled_program_active = false;
+        (void)irrigation_engine_stop_all(&ctx->engine);
         persistent_store_set_u32("rain_delay_h", cmd->rain_delay_hours);
         zic_controller_apply_event(&ctx->engine.controller, ZIC_EV_RAIN_DELAY_SET, -1);
         zic_publish_v2_outcome(ctx, "rain.delay_set", "info", "accepted", NULL, 0);
@@ -455,6 +730,89 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
     }
 }
 
+static void zic_scheduler_start_due_program(zic_app_context_t *ctx)
+{
+    if (!hal_time_is_synced() || !irrigation_engine_is_idle(&ctx->engine) ||
+        ctx->scheduled_program_active) {
+        return;
+    }
+
+    config_system_t system;
+    struct tm local_time;
+    uint32_t epoch;
+    if (config_get_system(&system) != CFG_OK || system.operational_mode != CONFIG_MODE_AUTO ||
+        hal_time_get_local(&local_time) != HAL_OK || hal_time_get_epoch(&epoch) != HAL_OK) {
+        return;
+    }
+
+    uint32_t minute_key = epoch / 60u;
+    config_days_t today = (config_days_t)(1u << local_time.tm_wday);
+    for (uint8_t program_index = 0; program_index < CONFIG_MAX_PROGRAMS; ++program_index) {
+        config_program_t program;
+        if (config_get_program(program_index, &program) != CFG_OK || !program.enabled ||
+            (program.run_days & today) == 0 ||
+            ctx->last_program_trigger_minute[program_index] == minute_key) {
+            continue;
+        }
+
+        bool due = false;
+        for (uint8_t start_index = 0; start_index < CONFIG_MAX_START_TIMES; ++start_index) {
+            const config_start_time_t *start = &program.start_times[start_index];
+            if (start->enabled && start->hour == local_time.tm_hour &&
+                start->minute == local_time.tm_min) {
+                due = true;
+                break;
+            }
+        }
+        if (!due) {
+            continue;
+        }
+
+        ctx->last_program_trigger_minute[program_index] = minute_key;
+        if (program.weather_skip_enabled &&
+            ctx->weather_snapshot.rain_probability_pct >= program.rain_skip_threshold_pct) {
+            ESP_LOGI(TAG, "Program %u skipped due to rain probability", program_index + 1);
+            continue;
+        }
+
+        ctx->scheduled_program_active = true;
+        ctx->scheduled_program_index = program_index;
+        ctx->scheduled_next_zone_index = 0;
+        ctx->scheduled_program = program;
+        ESP_LOGI(TAG, "Scheduled program %u started", program_index + 1);
+        return;
+    }
+}
+
+static void zic_scheduler_advance_program(zic_app_context_t *ctx)
+{
+    if (!ctx->scheduled_program_active || !irrigation_engine_is_idle(&ctx->engine)) {
+        return;
+    }
+
+    config_system_t system;
+    if (config_get_system(&system) != CFG_OK || system.operational_mode != CONFIG_MODE_AUTO) {
+        ctx->scheduled_program_active = false;
+        return;
+    }
+
+    while (ctx->scheduled_next_zone_index < CONFIG_MAX_ZONES) {
+        uint8_t zone_index = ctx->scheduled_next_zone_index++;
+        uint32_t runtime_seconds =
+            (uint32_t)ctx->scheduled_program.zone_runtime_min[zone_index] * 60u;
+        runtime_seconds = runtime_seconds * ctx->scheduled_program.seasonal_adjust_pct / 100u;
+        if (runtime_seconds != 0 && zic_runtime_start_zone(ctx, zone_index + 1, runtime_seconds)) {
+            ESP_LOGI(TAG, "Program %u running zone %u for %lu seconds",
+                     ctx->scheduled_program_index + 1, zone_index + 1,
+                     (unsigned long)runtime_seconds);
+            return;
+        }
+    }
+
+    ESP_LOGI(TAG, "Scheduled program %u completed", ctx->scheduled_program_index + 1);
+    ctx->scheduled_program_active = false;
+}
+
 static void zic_control_task(void *arg)
 {
     (void)arg;
@@ -463,7 +821,7 @@ static void zic_control_task(void *arg)
     xEventGroupSetBits(s_runtime_events, ZIC_EVENT_ENGINE_READY);
 
     for (;;) {
-        if (xQueueReceive(s_command_queue, &cmd, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        if (xQueueReceive(s_command_queue, &cmd, pdMS_TO_TICKS(100)) == pdTRUE) {
             xSemaphoreTake(s_ctx_lock, portMAX_DELAY);
             zic_runtime_apply_command(&s_ctx, &cmd);
             xSemaphoreGive(s_ctx_lock);
@@ -471,8 +829,58 @@ static void zic_control_task(void *arg)
 
         xSemaphoreTake(s_ctx_lock, portMAX_DELAY);
 
-        flow_manager_update(&s_ctx.flow_manager, 1400, &s_ctx.alarm_manager);
-        pressure_manager_update(&s_ctx.pressure_manager, 3500, &s_ctx.alarm_manager);
+        (void)irrigation_engine_tick(&s_ctx.engine,
+                         (uint64_t)(esp_timer_get_time() / 1000));
+
+        flow_measurement_t flow = {0};
+        watersensor_snapshot_t snapshot;
+        uint32_t snapshot_age_ms = 0;
+        if (xSemaphoreTake(s_watersensor_lock, pdMS_TO_TICKS(50)) == pdTRUE) {
+            if (watersensor_client_get_snapshot(&s_watersensor, &snapshot, &snapshot_age_ms)) {
+                for (uint8_t index = 0; index < snapshot.flow_count; ++index) {
+                    const watersensor_flow_record_t *record = &snapshot.flows[index];
+                    if (record->channel_id == s_watersensor.config.flow_channel_id &&
+                        (record->flags & WATERSENSOR_MEASUREMENT_VALID) != 0 &&
+                        (record->flags & WATERSENSOR_MEASUREMENT_FAULT) == 0) {
+                        flow.source = FLOW_SOURCE_WATERSENSOR;
+                        flow.flow_lpm_x100 = record->flow_ml_min / 10U;
+                        flow.measurement_age_ms = snapshot_age_ms;
+                        flow.volume_total_ml = record->volume_total_ml;
+                        flow.pulse_count_total = record->pulse_count_total;
+                        flow.valid = true;
+                        break;
+                    }
+                }
+            }
+            xSemaphoreGive(s_watersensor_lock);
+        }
+        bool irrigation_active = s_ctx.engine.phase == IRRIGATION_PHASE_RUNNING;
+        (void)flow_manager_supervise(&s_ctx.flow_manager, &flow, &s_ctx.flow_supervision,
+                                     irrigation_active,
+                                     (uint64_t)(esp_timer_get_time() / 1000),
+                                     &s_ctx.alarm_manager);
+
+        bool pressure_valid = false;
+        uint32_t pressure_mbar_value = 0;
+        if (irrigation_active && s_ctx.pressure_available) {
+            int32_t pressure_mv = 0;
+            if (hal_pressure_read_voltage(HAL_ADC_CHANNEL_0, HAL_ADC_PGA_6V144,
+                                          &pressure_mv) == HAL_OK &&
+                s_ctx.hydraulic_config.pressure_mv_per_bar > 0.0f) {
+                float pressure_mbar =
+                    ((float)pressure_mv - s_ctx.hydraulic_config.pressure_offset_mv) * 1000.0f /
+                    s_ctx.hydraulic_config.pressure_mv_per_bar;
+                pressure_mbar_value = pressure_mbar > 0.0f ? (uint32_t)pressure_mbar : 0;
+                pressure_valid = true;
+            }
+        }
+        (void)pressure_manager_supervise(&s_ctx.pressure_manager,
+                                         &s_ctx.pressure_supervision,
+                                         pressure_valid,
+                                         pressure_mbar_value,
+                                         irrigation_active,
+                                         (uint64_t)(esp_timer_get_time() / 1000),
+                                         &s_ctx.alarm_manager);
         storage_manager_append(&s_ctx.storage_manager, 1, ZIC_LOG_IRRIGATION, "heartbeat");
         persistent_store_set_u32("flow_baseline", s_ctx.flow_manager.baseline_lpm_x100);
         weather_manager_evaluate(&s_ctx.weather_snapshot, &s_ctx.weather_decision);
@@ -485,13 +893,41 @@ static void zic_control_task(void *arg)
         };
         et_engine_compute(&et_input, &s_ctx.et_output);
 
-        if (alarm_manager_is_active(&s_ctx.alarm_manager, ZIC_ALARM_LEAK_DETECTED)) {
+        if (alarm_manager_has_severity(&s_ctx.alarm_manager, ZIC_ALARM_CRITICAL)) {
+            if (!s_ctx.safety_fault_latched) {
+                ESP_LOGE(TAG, "Critical hydraulic alarm; irrigation locked out until reboot");
+                storage_manager_append(&s_ctx.storage_manager, 1, ZIC_LOG_ALARM,
+                                       "critical hydraulic shutdown");
+                zic_publish_v2_outcome(&s_ctx, "irrigation.fault", "critical", "failed",
+                                       "hydraulic_safety_shutdown", 0);
+            }
+            s_ctx.safety_fault_latched = true;
+            s_ctx.scheduled_program_active = false;
+            (void)irrigation_engine_stop_all(&s_ctx.engine);
+            (void)zic_controller_apply_event(&s_ctx.engine.controller, ZIC_EV_FAULT, -1);
             xEventGroupSetBits(s_runtime_events, ZIC_EVENT_FAULT);
-        } else {
+        } else if (!s_ctx.safety_fault_latched) {
             xEventGroupClearBits(s_runtime_events, ZIC_EVENT_FAULT);
+            zic_scheduler_advance_program(&s_ctx);
+            zic_scheduler_start_due_program(&s_ctx);
         }
 
         xSemaphoreGive(s_ctx_lock);
+    }
+}
+
+static void zic_watersensor_task(void *arg)
+{
+    (void)arg;
+
+    for (;;) {
+        uint32_t delay_ms = WATERSENSOR_DEFAULT_OFFLINE_POLL_MS;
+        if (xSemaphoreTake(s_watersensor_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+            (void)watersensor_client_poll(&s_watersensor);
+            delay_ms = watersensor_client_next_poll_ms(&s_watersensor);
+            xSemaphoreGive(s_watersensor_lock);
+        }
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
 }
 
@@ -504,6 +940,11 @@ static void zic_telemetry_task(void *arg)
 
     for (;;) {
         EventBits_t bits = xEventGroupGetBits(s_runtime_events);
+        watersensor_link_state_t watersensor_state = WATERSENSOR_LINK_OFFLINE;
+        if (xSemaphoreTake(s_watersensor_lock, pdMS_TO_TICKS(50)) == pdTRUE) {
+            watersensor_state = watersensor_client_get_state(&s_watersensor);
+            xSemaphoreGive(s_watersensor_lock);
+        }
 
         xSemaphoreTake(s_ctx_lock, portMAX_DELAY);
         if (storage_manager_count(&s_ctx.storage_manager) > 0) {
@@ -513,13 +954,15 @@ static void zic_telemetry_task(void *arg)
         }
 
         ESP_LOGI(TAG,
-                 "Telemetry controller_state=%d active_zone=%d alarm_high_flow=%d et_daily=%.2f fault=%d mqtt=%d logs=%u first_log=%s publish_topic=%s",
+                 "Telemetry controller_state=%d active_zone=%d alarm_high_flow=%d et_daily=%.2f fault=%d mqtt=%d watersensor=%d flow_source=%d logs=%u first_log=%s publish_topic=%s",
                  (int)s_ctx.engine.controller.state,
                  (int)s_ctx.engine.controller.active_zone,
                  alarm_manager_is_active(&s_ctx.alarm_manager, ZIC_ALARM_HIGH_FLOW),
                  s_ctx.et_output.daily_et_mm,
                  (bits & ZIC_EVENT_FAULT) != 0,
                  mqtt_transport_is_connected(&s_ctx.mqtt_transport),
+                 (int)watersensor_state,
+                 (int)s_ctx.flow_manager.source,
                  (unsigned)storage_manager_count(&s_ctx.storage_manager),
                  csv_line,
                  s_ctx.state_topic);
@@ -560,11 +1003,58 @@ static void zic_telemetry_task(void *arg)
     }
 }
 
+#if ZIC_RELAY_SELF_TEST
+static void zic_run_relay_self_test(void)
+{
+    const TickType_t pulse_ticks = pdMS_TO_TICKS(500);
+    const TickType_t gap_ticks = pdMS_TO_TICKS(250);
+
+    ESP_LOGW(TAG, "RELAY SELF-TEST: no loads should be connected");
+    if (hal_relay_init() != HAL_OK || hal_relay_all_off() != HAL_OK) {
+        ESP_LOGE(TAG, "RELAY SELF-TEST aborted: MCP23017 initialization failed");
+        (void)hal_relay_all_off();
+        return;
+    }
+
+    for (uint8_t relay = 0; relay < HAL_RELAY_COUNT; ++relay) {
+        if (hal_relay_all_off() != HAL_OK || hal_relay_on(relay) != HAL_OK) {
+            ESP_LOGE(TAG, "RELAY SELF-TEST failed at relay %u", (unsigned)(relay + 1));
+            (void)hal_relay_all_off();
+            return;
+        }
+
+        ESP_LOGI(TAG, "RELAY SELF-TEST: relay %u/16 ON", (unsigned)(relay + 1));
+        vTaskDelay(pulse_ticks);
+
+        if (hal_relay_off(relay) != HAL_OK) {
+            ESP_LOGE(TAG, "RELAY SELF-TEST could not turn relay %u OFF", (unsigned)(relay + 1));
+            (void)hal_relay_all_off();
+            return;
+        }
+        ESP_LOGI(TAG, "RELAY SELF-TEST: relay %u/16 OFF", (unsigned)(relay + 1));
+        vTaskDelay(gap_ticks);
+    }
+
+    (void)hal_relay_all_off();
+    ESP_LOGI(TAG, "RELAY SELF-TEST complete: all relays OFF");
+}
+#endif
+
 void app_main(void)
 {
     hmi_board_status_t hmi_status = {0};
 
     ESP_LOGI(TAG, "Zmartify Irrigation Controller booting");
+
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(nvs_err);
+
+    ESP_ERROR_CHECK(esp_netif_init());
+    (void)zic_wifi_init();
 
     if (!hmi_board_init()) {
         ESP_LOGW(TAG, "HMI init reported degraded status");
@@ -576,12 +1066,54 @@ void app_main(void)
              hmi_status.touch_present,
              hmi_status.backlight_enabled);
 
+#if ZIC_RELAY_SELF_TEST
+    zic_run_relay_self_test();
+    return;
+#endif
+
     s_command_queue = xQueueCreate(ZIC_CMD_QUEUE_LEN, sizeof(zic_runtime_command_t));
     s_runtime_events = xEventGroupCreate();
     s_ctx_lock = xSemaphoreCreateMutex();
-    if (s_command_queue == NULL || s_runtime_events == NULL || s_ctx_lock == NULL) {
+    s_watersensor_lock = xSemaphoreCreateMutex();
+    if (s_command_queue == NULL || s_runtime_events == NULL || s_ctx_lock == NULL ||
+        s_watersensor_lock == NULL) {
         ESP_LOGE(TAG, "Failed to allocate runtime resources");
         return;
+    }
+
+    if (!event_bus_init()) {
+        ESP_LOGW(TAG, "Event bus unavailable; Water Sensor events disabled");
+    }
+    if (hal_i2c_init() != HAL_OK) {
+        ESP_LOGE(TAG, "I2C initialization failed; irrigation disabled");
+        return;
+    }
+    if (hal_storage_init() != HAL_OK || config_manager_init() != CFG_OK) {
+        ESP_LOGE(TAG, "Configuration initialization failed; irrigation disabled");
+        return;
+    }
+    config_network_t network_config;
+    if (config_get_network(&network_config) != CFG_OK ||
+        hal_time_init(network_config.timezone) != HAL_OK) {
+        ESP_LOGE(TAG, "Time initialization failed; automatic irrigation disabled");
+        return;
+    }
+    config_system_t system_config;
+    if (config_get_system(&system_config) != CFG_OK || hal_relay_init() != HAL_OK ||
+        relay_manager_init((uint8_t)system_config.max_simultaneous_zones) != RELAY_OK) {
+        ESP_LOGE(TAG, "Relay initialization failed; irrigation disabled");
+        return;
+    }
+    hal_result_t pressure_result = hal_pressure_init();
+    s_ctx.pressure_available = pressure_result == HAL_OK;
+    if (!s_ctx.pressure_available) {
+        ESP_LOGW(TAG, "Pressure sensor unavailable; pressure supervision disabled");
+    }
+    if (!watersensor_client_init(&s_watersensor, NULL)) {
+        ESP_LOGW(TAG, "Water Sensor client unavailable; flow fallback remains active");
+    } else {
+        xTaskCreate(zic_watersensor_task, "watersensor", ZIC_WATERSENSOR_TASK_STACK,
+                    NULL, ZIC_WATERSENSOR_TASK_PRIO, NULL);
     }
 
     xSemaphoreTake(s_ctx_lock, portMAX_DELAY);
@@ -590,12 +1122,4 @@ void app_main(void)
 
     xTaskCreate(zic_control_task, "zic_ctrl", ZIC_CTRL_TASK_STACK, NULL, ZIC_CTRL_TASK_PRIO, NULL);
     xTaskCreate(zic_telemetry_task, "zic_telem", ZIC_TELEM_TASK_STACK, NULL, ZIC_TELEM_TASK_PRIO, NULL);
-
-    zic_runtime_command_t initial_cmd = {
-        .type = ZIC_CMD_START_ZONE,
-        .zone_id = 1,
-        .runtime_seconds = 300,
-        .rain_delay_hours = 0,
-    };
-    xQueueSend(s_command_queue, &initial_cmd, 0);
 }

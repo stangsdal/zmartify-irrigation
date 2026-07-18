@@ -192,6 +192,12 @@ A temporary direct-PCNT provider may remain behind a build-time feature flag whi
 
 Production configuration must select exactly one authoritative source for each logical flow role. Measurements from two sources must not be silently combined.
 
+The current commissioning build records the active source in `flow_manager_t`.
+It prefers valid, fresh Water Sensor channel 1 data and otherwise uses the
+existing direct/simulated source marked as `FLOW_SOURCE_DIRECT_FALLBACK`. This
+fallback is transitional and must be disabled when the Water Sensor becomes the
+commissioned authoritative source.
+
 ## 12. Revised testing requirements
 
 Automated tests shall cover:

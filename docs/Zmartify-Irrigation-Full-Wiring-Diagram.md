@@ -201,22 +201,22 @@ Before final wiring, verify the HL-58S board terminals and jumpers. Some version
 
 | Relay | Function |
 |---:|---|
-| 1 | Zone 1 |
-| 2 | Zone 2 |
-| 3 | Zone 3 |
-| 4 | Zone 4 |
-| 5 | Zone 5 |
-| 6 | Zone 6 |
-| 7 | Zone 7 |
-| 8 | Zone 8 |
-| 9 | Zone 9 |
-| 10 | Zone 10 |
-| 11 | Zone 11 |
-| 12 | Zone 12 |
-| 13 | Zone 13 |
-| 14 | Zone 14 |
-| 15 | Zone 15 |
-| 16 | Master valve |
+| 1 | Master valve |
+| 2 | Zone 1 |
+| 3 | Zone 2 |
+| 4 | Zone 3 |
+| 5 | Zone 4 |
+| 6 | Zone 5 |
+| 7 | Zone 6 |
+| 8 | Zone 7 |
+| 9 | Zone 8 |
+| 10 | Zone 9 |
+| 11 | Zone 10 |
+| 12 | Zone 11 |
+| 13 | Zone 12 |
+| 14 | Zone 13 |
+| 15 | Zone 14 |
+| 16 | Zone 15 |
 
 ### 5.3 Fail-safe state
 
@@ -254,11 +254,11 @@ ST315 24VAC-A ---- secondary fuse ---- common feed bus
                                           +---- ...
                                           +---- Relay 16 COM
 
-Relay 1 NO  ------------------------------ Zone 1 valve wire
-Relay 2 NO  ------------------------------ Zone 2 valve wire
+Relay 1 NO  ------------------------------ Master valve wire
+Relay 2 NO  ------------------------------ Zone 1 valve wire
 ...
-Relay 15 NO ------------------------------ Zone 15 valve wire
-Relay 16 NO ------------------------------ Master valve wire
+Relay 15 NO ------------------------------ Zone 14 valve wire
+Relay 16 NO ------------------------------ Zone 15 valve wire
 
 ST315 24VAC-B ---------------------------- Common wire to all valves
 ```

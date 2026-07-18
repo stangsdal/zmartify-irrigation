@@ -5,3 +5,4 @@ managed_components/
 sdkconfig
 sdkconfig.old
 *.log
+main/wifi_credentials.local.h

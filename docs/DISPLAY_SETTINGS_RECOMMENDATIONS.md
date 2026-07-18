@@ -182,7 +182,8 @@ The following changes were applied in the main firmware to align with these reco
   - `CONFIG_HMI_DISPLAY_PROFILE_LOW_RISK` (14 MHz)
   - `CONFIG_HMI_DISPLAY_PROFILE_HIGH_THROUGHPUT` (30.85 MHz)
 - `components/hmi_board/src/hmi_7b_rgb.c` now uses the selected profile for `LCD_PIXEL_CLOCK_HZ`.
-- Current selected profile in `sdkconfig`: `CONFIG_HMI_DISPLAY_PROFILE_HIGH_THROUGHPUT=y`.
+- Current selected and default profile: `CONFIG_HMI_DISPLAY_PROFILE_LOW_RISK=y`.
+- The 14 MHz profile was runtime-validated after the 30.85 MHz profile produced unstable display output on the target board.
 
 ### 3. Applied sdkconfig Key Delta
 
@@ -200,4 +201,4 @@ Set to recommendation-aligned values:
 - `CONFIG_LV_FONT_MONTSERRAT_20=y`
 - `CONFIG_LV_FONT_MONTSERRAT_24=y`
 - `CONFIG_LV_FONT_MONTSERRAT_44=y`
-- `CONFIG_HMI_DISPLAY_PROFILE_HIGH_THROUGHPUT=y`
+- `CONFIG_HMI_DISPLAY_PROFILE_LOW_RISK=y`

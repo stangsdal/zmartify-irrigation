@@ -1,0 +1,218 @@
+Command: cmake -G Ninja -B /Users/peter/esp/zmartify-irrigation/build-relay-test -DPYTHON_DEPS_CHECKED=1 -DPYTHON=/Users/peter/.espressif/python_env/idf6.0_py3.13_env/bin/python -DESP_PLATFORM=1 -DZIC_RELAY_SELF_TEST=ON -DCCACHE_ENABLE=False /Users/peter/esp/zmartify-irrigation
+info: Default value for ESP_WIFI_STATIC_RX_BUFFER_NUM in sdkconfig is 10 but it is 16 according to Kconfig.
+Using default value from sdkconfig (10).
+info: Default value for ESP_WIFI_RX_BA_WIN in sdkconfig is 6 but it is 16 according to Kconfig.
+Using default value from sdkconfig (6).
+info: Default value for LWIP_TCP_OOSEQ_MAX_PBUFS in sdkconfig is 4 but it is 0 according to Kconfig.
+Using default value from sdkconfig (4).
+info: Default value for LV_CONF_MINIMAL in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_COLOR_SCREEN_TRANSP in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_MEM_CUSTOM in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_MEMCPY_MEMSET_STD in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_ASSERT_NULL in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_ASSERT_MALLOC in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_PERF_MONITOR in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_ATTRIBUTE_FAST_MEM_USE_IRAM in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_FONT_MONTSERRAT_12 in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_FONT_MONTSERRAT_14 in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_FONT_MONTSERRAT_16 in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_FONT_MONTSERRAT_20 in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_FONT_MONTSERRAT_24 in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_FONT_MONTSERRAT_44 in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_FONT_UNSCII_8 in sdkconfig is n but it is y according to Kconfig.
+Using default value from sdkconfig (n).
+info: Default value for LV_USE_ARC in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_BAR in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_BTN in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_BTNMATRIX in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_CANVAS in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_CHECKBOX in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_DROPDOWN in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_LINE in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_ROLLER in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_SLIDER in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_SWITCH in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_TEXTAREA in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_TABLE in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_ANIMIMG in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_CALENDAR in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_CHART in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_COLORWHEEL in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_IMGBTN in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_KEYBOARD in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_LED in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_LIST in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_MENU in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_METER in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_MSGBOX in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_SPAN in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_SPINBOX in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_SPINNER in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_TABVIEW in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_TILEVIEW in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_WIN in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_THEME_DEFAULT in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_THEME_BASIC in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_FLEX in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_GRID in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+info: Default value for LV_USE_SNAPSHOT in sdkconfig is y but it is n according to Kconfig.
+Using default value from sdkconfig (y).
+Configuration Report                                                            
+ ────────────────────────────────────────────────────────────────────────────── 
+   Parser Version: 1                                                            
+   Verbosity: default                                                           
+   Defaults policy: sdkconfig                                                   
+   Status: Finished with notifications                                          
+                                                                                
+  Default Value Mismatch                                                        
+   ──────────────────────────────────────────────────────────────────────────   
+    Using sdkconfig default values                                              
+    Config symbols with different default value between sdkconfig and           
+    Kconfig                                                                     
+    LV_USE_CALENDAR: Kconfig default value: n, sdkconfig default value: y       
+    LV_USE_ASSERT_NULL: Kconfig default value: n, sdkconfig default             
+    value: y                                                                    
+    LV_USE_SPAN: Kconfig default value: n, sdkconfig default value: y           
+    LV_USE_SNAPSHOT: Kconfig default value: n, sdkconfig default value: y       
+    LV_USE_WIN: Kconfig default value: n, sdkconfig default value: y            
+    LV_USE_DROPDOWN: Kconfig default value: n, sdkconfig default value: y       
+    LV_FONT_MONTSERRAT_14: Kconfig default value: n, sdkconfig default          
+    value: y                                                                    
+    LV_USE_SPINBOX: Kconfig default value: n, sdkconfig default value: y        
+    LV_USE_ARC: Kconfig default value: n, sdkconfig default value: y            
+    LV_USE_FLEX: Kconfig default value: n, sdkconfig default value: y           
+    ESP_WIFI_STATIC_RX_BUFFER_NUM: Kconfig default value: 16, sdkconfig         
+    default value: 10                                                           
+    LV_COLOR_SCREEN_TRANSP: Kconfig default value: n, sdkconfig default         
+    value: y                                                                    
+    LV_USE_BTNMATRIX: Kconfig default value: n, sdkconfig default value:        
+    y                                                                           
+    LV_USE_THEME_DEFAULT: Kconfig default value: n, sdkconfig default           
+    value: y                                                                    
+    LV_FONT_MONTSERRAT_12: Kconfig default value: n, sdkconfig default          
+    value: y                                                                    
+    LV_USE_METER: Kconfig default value: n, sdkconfig default value: y          
+    LV_FONT_MONTSERRAT_20: Kconfig default value: n, sdkconfig default          
+    value: y                                                                    
+    LV_USE_SLIDER: Kconfig default value: n, sdkconfig default value: y         
+    LV_USE_MSGBOX: Kconfig default value: n, sdkconfig default value: y         
+    LV_USE_ROLLER: Kconfig default value: n, sdkconfig default value: y         
+    LV_USE_COLORWHEEL: Kconfig default value: n, sdkconfig default value:       
+    y                                                                           
+    LV_USE_SWITCH: Kconfig default value: n, sdkconfig default value: y         
+    LV_USE_BTN: Kconfig default value: n, sdkconfig default value: y            
+    LV_USE_MENU: Kconfig default value: n, sdkconfig default value: y           
+    LV_USE_LED: Kconfig default value: n, sdkconfig default value: y            
+    LV_FONT_MONTSERRAT_16: Kconfig default value: n, sdkconfig default          
+    value: y                                                                    
+    LV_FONT_MONTSERRAT_44: Kconfig default value: n, sdkconfig default          
+    value: y                                                                    
+    LV_USE_CANVAS: Kconfig default value: n, sdkconfig default value: y         
+    LV_USE_ANIMIMG: Kconfig default value: n, sdkconfig default value: y        
+    LV_USE_KEYBOARD: Kconfig default value: n, sdkconfig default value: y       
+    LV_USE_ASSERT_MALLOC: Kconfig default value: n, sdkconfig default           
+    value: y                                                                    
+    LV_MEM_CUSTOM: Kconfig default value: n, sdkconfig default value: y         
+    LV_USE_PERF_MONITOR: Kconfig default value: n, sdkconfig default            
+    value: y                                                                    
+    LV_USE_BAR: Kconfig default value: n, sdkconfig default value: y            
+    LV_USE_LIST: Kconfig default value: n, sdkconfig default value: y           
+    LV_USE_SPINNER: Kconfig default value: n, sdkconfig default value: y        
+    LV_USE_TILEVIEW: Kconfig default value: n, sdkconfig default value: y       
+    LV_MEMCPY_MEMSET_STD: Kconfig default value: n, sdkconfig default           
+    value: y                                                                    
+    LV_USE_TABVIEW: Kconfig default value: n, sdkconfig default value: y        
+    LV_USE_THEME_BASIC: Kconfig default value: n, sdkconfig default             
+    value: y                                                                    
+    LV_CONF_MINIMAL: Kconfig default value: n, sdkconfig default value: y       
+    LV_ATTRIBUTE_FAST_MEM_USE_IRAM: Kconfig default value: n, sdkconfig         
+    default value: y                                                            
+    LWIP_TCP_OOSEQ_MAX_PBUFS: Kconfig default value: 0, sdkconfig default       
+    value: 4                                                                    
+    LV_USE_IMGBTN: Kconfig default value: n, sdkconfig default value: y         
+    LV_FONT_UNSCII_8: Kconfig default value: y, sdkconfig default value:        
+    n                                                                           
+    LV_USE_GRID: Kconfig default value: n, sdkconfig default value: y           
+    ESP_WIFI_RX_BA_WIN: Kconfig default value: 16, sdkconfig default            
+    value: 6                                                                    
+    LV_USE_CHART: Kconfig default value: n, sdkconfig default value: y          
+    LV_FONT_MONTSERRAT_24: Kconfig default value: n, sdkconfig default          
+    value: y                                                                    
+    LV_USE_TEXTAREA: Kconfig default value: n, sdkconfig default value: y       
+    LV_USE_TABLE: Kconfig default value: n, sdkconfig default value: y          
+    LV_USE_LINE: Kconfig default value: n, sdkconfig default value: y           
+    LV_USE_CHECKBOX: Kconfig default value: n, sdkconfig default value: y       
+                                                                                
+    Choice symbols with different default selection between sdkconfig and       
+    Kconfig                                                                     
+    ESPTOOLPY_FLASHSIZE: Kconfig default selection:                             
+    ESPTOOLPY_FLASHSIZE_2MB, sdkconfig default selection:                       
+    ESPTOOLPY_FLASHSIZE_16MB                                                    
+    LV_TXT_ENC: Kconfig default selection: LV_TXT_ENC_ASCII, sdkconfig          
+    default selection: LV_TXT_ENC_UTF8                                          
+    LV_FONT_DEFAULT: Kconfig default selection: LV_FONT_DEFAULT_UNSCII_8,       
+    sdkconfig default selection: LV_FONT_DEFAULT_MONTSERRAT_14                  
+    PARTITION_TABLE_TYPE: Kconfig default selection:                            
+    PARTITION_TABLE_SINGLE_APP, sdkconfig default selection:                    
+    PARTITION_TABLE_TWO_OTA_LARGE                                               
+   ──────────────────────────────────────────────────────────────────────────   
+  Multiple Assignments                                                          
+   ───────────────────────────────────────────────────────                      
+    Choice ESPTOOLPY_FLASHSIZE:                                                 
+        ESPTOOLPY_FLASHSIZE_2MB (default selection)                             
+        ESPTOOLPY_FLASHSIZE_16MB (default selection)                            
+        -> using ESPTOOLPY_FLASHSIZE_16MB                                       
+    Choice PARTITION_TABLE_TYPE:                                                
+        PARTITION_TABLE_SINGLE_APP (default selection)                          
+        PARTITION_TABLE_TWO_OTA_LARGE (default selection)                       
+        -> using PARTITION_TABLE_TWO_OTA_LARGE                                  
+   ───────────────────────────────────────────────────────                      
+ ────────────────────────────────────────────────────────────────────────────── 

@@ -82,6 +82,19 @@ bool alarm_manager_is_active(const alarm_manager_t *manager, zic_alarm_code_t co
     return false;
 }
 
+bool alarm_manager_has_severity(const alarm_manager_t *manager, zic_alarm_severity_t severity)
+{
+    if (manager == NULL) {
+        return false;
+    }
+    for (int i = 0; i < ZIC_MAX_ACTIVE_ALARMS; ++i) {
+        if (manager->alarms[i].active && manager->alarms[i].severity == severity) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void alarm_raise(zic_alarm_code_t code, zic_alarm_severity_t severity, uint8_t zone_id)
 {
     (void)zone_id;

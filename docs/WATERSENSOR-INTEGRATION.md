@@ -110,6 +110,43 @@ components/watersensor_client/
   test/test_watersensor_protocol.c
 ```
 
+This component is implemented in the controller firmware. The initial client
+uses I2C address `0x31`, polls every 5 seconds while the device is absent and
+every 500 ms while it is online. Device absence does not block controller boot.
+
+### I2C snapshot protocol v1
+
+The controller performs a commandless 228-byte read. All multibyte fields are
+little-endian. Protocol major changes are incompatible; newer minor versions
+remain compatible when the fixed frame layout is unchanged.
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 4 | Magic `ZWS1` |
+| 4 | 1 | Protocol major (`1`) |
+| 5 | 1 | Protocol minor (`0`) |
+| 6 | 2 | Frame length (`228`) |
+| 8 | 4 | Snapshot sequence |
+| 12 | 4 | Source uptime in milliseconds |
+| 16 | 4 | Source boot ID |
+| 20 | 8 | Stable source device ID |
+| 28 | 2 | Source status flags |
+| 30 | 1 | Flow record count, maximum 4 |
+| 31 | 1 | Temperature record count, maximum 5 |
+| 32 | 112 | Four fixed 28-byte flow record slots |
+| 144 | 80 | Five fixed 16-byte temperature record slots |
+| 224 | 4 | IEEE CRC32 over bytes 0-223 |
+
+Each flow record contains `channel_id` (u8), reserved byte, flags (u16),
+`pulse_count_total` (u64), `volume_total_ml` (u64), `flow_ml_min` (u32) and
+`last_pulse_age_ms` (u32). Each temperature record contains stable
+`sensor_id` (u64), `temperature_millic` (i32), `measurement_age_ms` (u16) and
+flags (u16). Flag bit 0 means valid and bit 1 means sensor fault.
+
+The controller accepts a new snapshot only after magic, length, major version,
+record counts and CRC validation. A repeated sequence does not refresh
+measurement age. A changed boot ID permits sequence restart.
+
 ### Flow Manager
 
 Flow Manager shall no longer depend directly on a PCNT HAL driver. It shall consume flow records from `WaterSensorClient` and retain responsibility for:
@@ -250,6 +287,11 @@ The controller should not republish every raw Water Sensor field unless required
 6. Integrate temperature roles and remove direct temperature acquisition only after parity testing.
 7. Validate communication-loss behavior during active irrigation.
 8. Remove obsolete PCNT and local-temperature assumptions after hardware migration is complete.
+
+Current transition state: steps 1 and 3 are implemented. Flow channel 1 is
+preferred automatically when a valid, fresh Water Sensor snapshot is present.
+Until the node is commissioned, the existing controller flow input remains the
+explicit fallback; missing Water Sensor data is never converted to zero.
 
 ## 12. Acceptance criteria
 

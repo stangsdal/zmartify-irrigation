@@ -2,7 +2,7 @@ menu "HMI Board"
 
 choice HMI_DISPLAY_PROFILE
     prompt "HMI display profile"
-    default HMI_DISPLAY_PROFILE_HIGH_THROUGHPUT
+    default HMI_DISPLAY_PROFILE_LOW_RISK
     help
         Select the display timing profile for the 7B RGB panel.
 

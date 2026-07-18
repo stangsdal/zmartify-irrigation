@@ -1,0 +1,2 @@
+source /Users/peter/esp/zmartify-irrigation/build-relay-test/gdbinit/symbols
+source /Users/peter/esp/zmartify-irrigation/build-relay-test/gdbinit/connect

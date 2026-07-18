@@ -1,0 +1,5 @@
+"-specs=/Users/peter/esp/zmartify-irrigation/build-relay-test/bootloader/specs/picolibc.specs"
+-mlongcalls
+-fno-builtin-memcpy
+-fno-builtin-memset
+-fno-builtin-bzero

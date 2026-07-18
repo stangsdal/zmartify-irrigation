@@ -32,21 +32,6 @@ static bool ioexp_select_address(void)
         s_addr = HMI_7B_IOEXP_ADDR;
         return true;
     }
-
-    for (uint8_t addr = 0x20; addr <= 0x27; ++addr)
-    {
-        if (addr == HMI_7B_IOEXP_ADDR)
-        {
-            continue;
-        }
-        if (hmi_7b_bus_probe(addr))
-        {
-            s_addr = addr;
-            ESP_LOGW(TAG, "IO expander fallback address selected: 0x%02X", s_addr);
-            return true;
-        }
-    }
-
     return false;
 }
 

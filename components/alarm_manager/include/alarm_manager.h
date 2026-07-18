@@ -37,6 +37,7 @@ void alarm_manager_init(alarm_manager_t *manager);
 void alarm_manager_raise(alarm_manager_t *manager, zic_alarm_code_t code, zic_alarm_severity_t severity);
 void alarm_manager_clear(alarm_manager_t *manager, zic_alarm_code_t code);
 bool alarm_manager_is_active(const alarm_manager_t *manager, zic_alarm_code_t code);
+bool alarm_manager_has_severity(const alarm_manager_t *manager, zic_alarm_severity_t severity);
 
 /* Legacy compatibility aliases used by older components. */
 #define ALARM_SEV_INFO ZIC_ALARM_INFO

@@ -9,8 +9,8 @@
  * Architecture ref: MEP v5.0 Volume 2, Chapter 4, Section 4.7
  *
  * Relay mapping:
- *   Relay  0-7  : MCP23017 #0 (GPIOA 0-7)   → Zones 1-8
- *   Relay  8-15 : MCP23017 #1 (GPIOA 0-7)   → Zones 9-16  (Relay 15 = Master Valve)
+ *   Relay  0-7  : MCP23017 GPIOA 0-7
+ *   Relay  8-15 : MCP23017 GPIOB 0-7
  */
 
 #pragma once

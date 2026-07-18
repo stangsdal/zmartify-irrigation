@@ -84,8 +84,8 @@ typedef enum hal_result
 
 /* Relay count */
 #define ZIC_RELAY_COUNT        16       /**< Max concurrent relays */
-#define ZIC_RELAY_ZONE_FIRST   0        /**< Relay 0 = Zone 1 */
-#define ZIC_RELAY_MASTER_VALVE 15       /**< Relay 15 = Master Valve */
+#define ZIC_RELAY_MASTER_VALVE 0        /**< Physical port 1 = Master Valve */
+#define ZIC_RELAY_ZONE_FIRST   1        /**< Physical ports 2-16 = Zones 1-15 */
 
 /* ──────────────────────────────────────────────
  *  HAL subsystem initialisation
