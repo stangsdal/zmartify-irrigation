@@ -16,6 +16,7 @@ fi
 
 echo "Uploading $FIRMWARE to http://$DEVICE_IP/ota"
 curl --fail --show-error --connect-timeout 10 --max-time 180 \
+    -H "Expect:" \
     -H "Content-Type: application/octet-stream" \
     --data-binary "@$FIRMWARE" \
     "http://$DEVICE_IP/ota"

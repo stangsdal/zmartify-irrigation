@@ -17,4 +17,5 @@ Each step is committed independently for traceability.
 
 - Steps 1-4: complete.
 - Step 5: complete. Flow and pressure supervision use valid sensor data, time-qualified alarm escalation, and critical fail-safe irrigation shutdown.
-- Steps 6-8: pending.
+- Step 6: complete. Operational events use a CRC-protected NVS ring, 30-day pruning, critical/immediate and hourly flush policies, and HTTP JSON/CSV export.
+- Steps 7-8: pending.

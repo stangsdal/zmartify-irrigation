@@ -48,7 +48,7 @@ static const uint8_t zic_wifi_password[] = {0};
 #endif
 
 static const char *TAG = "zic_main";
-static zic_log_entry_t s_log_buffer[128];
+static zic_log_entry_t s_log_buffer[ZIC_LOG_PERSIST_CAPACITY];
 
 #define ZIC_CMD_QUEUE_LEN 16
 #define ZIC_CTRL_TASK_STACK 6144
@@ -106,6 +106,7 @@ typedef struct {
     config_hydraulic_t hydraulic_config;
     bool pressure_available;
     bool safety_fault_latched;
+    uint32_t last_log_maintenance_timestamp;
 } zic_app_context_t;
 
 static zic_app_context_t s_ctx;
@@ -129,6 +130,24 @@ static char s_v2_state_topic[128];
 static char s_v2_outcome_topic[128];
 static char s_v2_last_command_id[40];
 static httpd_handle_t s_ota_http_server;
+
+static uint32_t zic_log_timestamp(void)
+{
+    uint32_t epoch = 0;
+    return hal_time_is_synced() && hal_time_get_epoch(&epoch) == HAL_OK ? epoch : 0;
+}
+
+static bool zic_log_load(void *context, void *data, size_t *length)
+{
+    (void)context;
+    return hal_storage_read_blob("event_log", data, length) == HAL_OK;
+}
+
+static bool zic_log_save(void *context, const void *data, size_t length)
+{
+    (void)context;
+    return hal_storage_write_blob("event_log", data, length) == HAL_OK;
+}
 
 static void zic_ota_restart_task(void *arg)
 {
@@ -195,6 +214,69 @@ static esp_err_t zic_ota_http_handler(httpd_req_t *request)
     return ESP_OK;
 }
 
+static esp_err_t zic_logs_http_handler(httpd_req_t *request)
+{
+    if (s_ctx_lock == NULL) {
+        httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Runtime not ready");
+        return ESP_FAIL;
+    }
+
+    char query[32] = {0};
+    char format[8] = "json";
+    size_t query_length = httpd_req_get_url_query_len(request);
+    if (query_length > 0 && query_length < sizeof(query) &&
+        httpd_req_get_url_query_str(request, query, sizeof(query)) == ESP_OK) {
+        (void)httpd_query_key_value(query, "format", format, sizeof(format));
+    }
+    bool csv = strcmp(format, "csv") == 0;
+    httpd_resp_set_type(request, csv ? "text/csv" : "application/json");
+
+    if (xSemaphoreTake(s_ctx_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Runtime busy");
+        return ESP_FAIL;
+    }
+
+    esp_err_t result = ESP_OK;
+    if (csv) {
+        result = httpd_resp_send_chunk(request, "timestamp,type,message\n", 23);
+    } else {
+        result = httpd_resp_send_chunk(request, "[", 1);
+    }
+
+    char line[256];
+    for (size_t index = 0; result == ESP_OK && index < storage_manager_count(&s_ctx.storage_manager);
+         ++index) {
+        zic_log_entry_t entry;
+        if (!storage_manager_get(&s_ctx.storage_manager, index, &entry)) {
+            continue;
+        }
+        size_t length = csv
+            ? storage_manager_export_csv(&entry, line, sizeof(line))
+            : storage_manager_export_json(&entry, line, sizeof(line));
+        if (length == 0) {
+            result = ESP_FAIL;
+            break;
+        }
+        if (!csv && index > 0) {
+            result = httpd_resp_send_chunk(request, ",", 1);
+        }
+        if (result == ESP_OK) {
+            result = httpd_resp_send_chunk(request, line, length);
+        }
+        if (result == ESP_OK && csv) {
+            result = httpd_resp_send_chunk(request, "\n", 1);
+        }
+    }
+    if (result == ESP_OK && !csv) {
+        result = httpd_resp_send_chunk(request, "]", 1);
+    }
+    if (result == ESP_OK) {
+        result = httpd_resp_send_chunk(request, NULL, 0);
+    }
+    xSemaphoreGive(s_ctx_lock);
+    return result;
+}
+
 static bool zic_ota_http_start(void)
 {
     if (s_ota_http_server != NULL) {
@@ -222,7 +304,20 @@ static bool zic_ota_http_start(void)
         return false;
     }
 
-    ESP_LOGI(TAG, "Direct OTA ready: POST /ota");
+    const httpd_uri_t logs_uri = {
+        .uri = "/logs",
+        .method = HTTP_GET,
+        .handler = zic_logs_http_handler,
+    };
+    err = httpd_register_uri_handler(s_ota_http_server, &logs_uri);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Log export endpoint registration failed: %s", esp_err_to_name(err));
+        httpd_stop(s_ota_http_server);
+        s_ota_http_server = NULL;
+        return false;
+    }
+
+    ESP_LOGI(TAG, "HTTP services ready: POST /ota, GET /logs");
     return true;
 }
 
@@ -602,7 +697,13 @@ static void zic_runtime_init_context(zic_app_context_t *ctx)
     ctx->flow_supervision.high_flow_duration_ms = alarm_config.high_flow_duration_s * 1000u;
     ctx->flow_supervision.active_max_age_ms = 1500;
     ctx->flow_supervision.idle_max_age_ms = 5000;
-    storage_manager_init(&ctx->storage_manager, s_log_buffer, 128);
+    storage_manager_init(&ctx->storage_manager, s_log_buffer, ZIC_LOG_PERSIST_CAPACITY);
+    storage_manager_set_persistence(&ctx->storage_manager, zic_log_load, zic_log_save, NULL);
+    if (!storage_manager_restore(&ctx->storage_manager)) {
+        ESP_LOGI(TAG, "No valid persisted event log found");
+    }
+    storage_manager_append(&ctx->storage_manager, zic_log_timestamp(), ZIC_LOG_AUDIT,
+                           "controller boot");
     flow_manager_set_baseline(&ctx->flow_manager, baseline_flow);
 
     ctx->weather_snapshot.rain_mm_last_24h = 0.0f;
@@ -676,9 +777,14 @@ static bool zic_runtime_start_zone(zic_app_context_t *ctx,
         runtime_seconds = system.global_max_runtime_s;
     }
 
-    return irrigation_engine_start_zone(&ctx->engine, zone_id, zone.relay_index,
-                                        runtime_seconds,
-                                        (uint64_t)(esp_timer_get_time() / 1000));
+    if (!irrigation_engine_start_zone(&ctx->engine, zone_id, zone.relay_index,
+                                      runtime_seconds,
+                                      (uint64_t)(esp_timer_get_time() / 1000))) {
+        return false;
+    }
+    storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
+                           ZIC_LOG_IRRIGATION, "zone started");
+    return true;
 }
 
 static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_command_t *cmd)
@@ -696,11 +802,15 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
     case ZIC_CMD_STOP_ZONE:
         ctx->scheduled_program_active = false;
         irrigation_engine_stop_zone(&ctx->engine, cmd->zone_id);
+        storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
+                       ZIC_LOG_IRRIGATION, "zone stopped by command");
         zic_publish_v2_outcome(ctx, "run.stopped", "info", "completed", NULL, cmd->zone_id);
         break;
     case ZIC_CMD_STOP_ALL:
         ctx->scheduled_program_active = false;
         irrigation_engine_stop_all(&ctx->engine);
+        storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
+                       ZIC_LOG_AUDIT, "all irrigation stopped by command");
         zic_publish_v2_outcome(ctx, "run.stopped", "info", "completed", "stop_all", 0);
         break;
     case ZIC_CMD_SET_RAIN_DELAY:
@@ -708,11 +818,15 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
         (void)irrigation_engine_stop_all(&ctx->engine);
         persistent_store_set_u32("rain_delay_h", cmd->rain_delay_hours);
         zic_controller_apply_event(&ctx->engine.controller, ZIC_EV_RAIN_DELAY_SET, -1);
+        storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
+                       ZIC_LOG_AUDIT, "rain delay set");
         zic_publish_v2_outcome(ctx, "rain.delay_set", "info", "accepted", NULL, 0);
         break;
     case ZIC_CMD_CLEAR_RAIN_DELAY:
         persistent_store_set_u32("rain_delay_h", 0);
         zic_controller_apply_event(&ctx->engine.controller, ZIC_EV_RAIN_DELAY_CLEAR, -1);
+        storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
+                       ZIC_LOG_AUDIT, "rain delay cleared");
         zic_publish_v2_outcome(ctx, "rain.delay_cleared", "info", "accepted", NULL, 0);
         break;
     case ZIC_CMD_TRIGGER_OTA: {
@@ -779,6 +893,8 @@ static void zic_scheduler_start_due_program(zic_app_context_t *ctx)
         ctx->scheduled_program_index = program_index;
         ctx->scheduled_next_zone_index = 0;
         ctx->scheduled_program = program;
+        storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
+                       ZIC_LOG_IRRIGATION, "scheduled program started");
         ESP_LOGI(TAG, "Scheduled program %u started", program_index + 1);
         return;
     }
@@ -810,6 +926,8 @@ static void zic_scheduler_advance_program(zic_app_context_t *ctx)
     }
 
     ESP_LOGI(TAG, "Scheduled program %u completed", ctx->scheduled_program_index + 1);
+    storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
+                           ZIC_LOG_IRRIGATION, "scheduled program completed");
     ctx->scheduled_program_active = false;
 }
 
@@ -829,8 +947,14 @@ static void zic_control_task(void *arg)
 
         xSemaphoreTake(s_ctx_lock, portMAX_DELAY);
 
+        irrigation_phase_t previous_phase = s_ctx.engine.phase;
         (void)irrigation_engine_tick(&s_ctx.engine,
-                         (uint64_t)(esp_timer_get_time() / 1000));
+                                     (uint64_t)(esp_timer_get_time() / 1000));
+        if (previous_phase == IRRIGATION_PHASE_MASTER_CLOSE_DELAY &&
+            irrigation_engine_is_idle(&s_ctx.engine)) {
+            storage_manager_append(&s_ctx.storage_manager, zic_log_timestamp(),
+                                   ZIC_LOG_IRRIGATION, "zone completed");
+        }
 
         flow_measurement_t flow = {0};
         watersensor_snapshot_t snapshot;
@@ -881,8 +1005,6 @@ static void zic_control_task(void *arg)
                                          irrigation_active,
                                          (uint64_t)(esp_timer_get_time() / 1000),
                                          &s_ctx.alarm_manager);
-        storage_manager_append(&s_ctx.storage_manager, 1, ZIC_LOG_IRRIGATION, "heartbeat");
-        persistent_store_set_u32("flow_baseline", s_ctx.flow_manager.baseline_lpm_x100);
         weather_manager_evaluate(&s_ctx.weather_snapshot, &s_ctx.weather_decision);
 
         et_input_t et_input = {
@@ -896,8 +1018,9 @@ static void zic_control_task(void *arg)
         if (alarm_manager_has_severity(&s_ctx.alarm_manager, ZIC_ALARM_CRITICAL)) {
             if (!s_ctx.safety_fault_latched) {
                 ESP_LOGE(TAG, "Critical hydraulic alarm; irrigation locked out until reboot");
-                storage_manager_append(&s_ctx.storage_manager, 1, ZIC_LOG_ALARM,
+                storage_manager_append(&s_ctx.storage_manager, zic_log_timestamp(), ZIC_LOG_ALARM,
                                        "critical hydraulic shutdown");
+                (void)storage_manager_flush(&s_ctx.storage_manager, zic_log_timestamp());
                 zic_publish_v2_outcome(&s_ctx, "irrigation.fault", "critical", "failed",
                                        "hydraulic_safety_shutdown", 0);
             }
@@ -910,6 +1033,21 @@ static void zic_control_task(void *arg)
             xEventGroupClearBits(s_runtime_events, ZIC_EVENT_FAULT);
             zic_scheduler_advance_program(&s_ctx);
             zic_scheduler_start_due_program(&s_ctx);
+        }
+
+        uint32_t log_timestamp = zic_log_timestamp();
+        if (log_timestamp != 0 &&
+            (s_ctx.last_log_maintenance_timestamp == 0 ||
+             log_timestamp - s_ctx.last_log_maintenance_timestamp >= 3600)) {
+            s_ctx.last_log_maintenance_timestamp = log_timestamp;
+            (void)storage_manager_prune_before(
+                &s_ctx.storage_manager,
+                log_timestamp > ZIC_LOG_RETENTION_SECONDS
+                    ? log_timestamp - ZIC_LOG_RETENTION_SECONDS
+                    : 0);
+            if (storage_manager_flush_due(&s_ctx.storage_manager, log_timestamp, 3600)) {
+                (void)storage_manager_flush(&s_ctx.storage_manager, log_timestamp);
+            }
         }
 
         xSemaphoreGive(s_ctx_lock);
