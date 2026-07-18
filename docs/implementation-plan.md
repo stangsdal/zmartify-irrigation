@@ -18,4 +18,5 @@ Each step is committed independently for traceability.
 - Steps 1-4: complete.
 - Step 5: complete. Flow and pressure supervision use valid sensor data, time-qualified alarm escalation, and critical fail-safe irrigation shutdown.
 - Step 6: complete. Operational events use a CRC-protected NVS ring, 30-day pruning, critical/immediate and hourly flush policies, and HTTP JSON/CSV export.
-- Steps 7-8: pending.
+- Step 7: complete. Provider-neutral weather ingestion uses a CRC-protected 24-hour NVS cache, FAO-56 reference ET, effective-rain deduction, per-zone crop coefficients, and bounded seasonal runtime adjustment with safe stale-data fallback.
+- Step 8: pending.

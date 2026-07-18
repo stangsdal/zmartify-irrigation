@@ -7,6 +7,7 @@ typedef struct {
     float humidity_pct;
     float wind_speed_mps;
     float solar_radiation_mj_m2;
+    float elevation_m;
 } et_input_t;
 
 typedef struct {

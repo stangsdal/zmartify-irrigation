@@ -92,6 +92,7 @@ typedef struct {
     pressure_manager_t pressure_manager;
     storage_manager_t storage_manager;
     weather_snapshot_t weather_snapshot;
+    weather_manager_t weather_manager;
     weather_decision_t weather_decision;
     et_output_t et_output;
     char state_topic[ZIC_MQTT_TOPIC_MAX];
@@ -107,6 +108,7 @@ typedef struct {
     bool pressure_available;
     bool safety_fault_latched;
     uint32_t last_log_maintenance_timestamp;
+    uint32_t last_weather_calculation_timestamp;
 } zic_app_context_t;
 
 static zic_app_context_t s_ctx;
@@ -147,6 +149,18 @@ static bool zic_log_save(void *context, const void *data, size_t length)
 {
     (void)context;
     return hal_storage_write_blob("event_log", data, length) == HAL_OK;
+}
+
+static bool zic_weather_load(void *context, void *data, size_t *length)
+{
+    (void)context;
+    return hal_storage_read_blob("weather", data, length) == HAL_OK;
+}
+
+static bool zic_weather_save(void *context, const void *data, size_t length)
+{
+    (void)context;
+    return hal_storage_write_blob("weather", data, length) == HAL_OK;
 }
 
 static void zic_ota_restart_task(void *arg)
@@ -277,6 +291,77 @@ static esp_err_t zic_logs_http_handler(httpd_req_t *request)
     return result;
 }
 
+static bool zic_json_float(const cJSON *json, const char *key, float *value, bool required)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(json, key);
+    if (item == NULL) {
+        return !required;
+    }
+    if (!cJSON_IsNumber(item)) {
+        return false;
+    }
+    *value = (float)item->valuedouble;
+    return true;
+}
+
+static esp_err_t zic_weather_http_handler(httpd_req_t *request)
+{
+    if (request->content_len <= 0 || request->content_len >= 512 || s_ctx_lock == NULL) {
+        httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid weather payload");
+        return ESP_FAIL;
+    }
+    char body[512];
+    int received_total = 0;
+    while (received_total < request->content_len) {
+        int received = httpd_req_recv(request, body + received_total,
+                                      request->content_len - received_total);
+        if (received <= 0) {
+            httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Incomplete weather payload");
+            return ESP_FAIL;
+        }
+        received_total += received;
+    }
+    body[received_total] = '\0';
+
+    cJSON *json = cJSON_Parse(body);
+    weather_snapshot_t snapshot = {0};
+    const cJSON *timestamp = json != NULL
+        ? cJSON_GetObjectItemCaseSensitive(json, "timestamp")
+        : NULL;
+    if (timestamp != NULL && cJSON_IsNumber(timestamp)) {
+        snapshot.timestamp = (uint32_t)timestamp->valuedouble;
+    } else {
+        snapshot.timestamp = zic_log_timestamp();
+    }
+    bool valid = json != NULL && snapshot.timestamp != 0 &&
+        zic_json_float(json, "temperature_c", &snapshot.temperature_c, true) &&
+        zic_json_float(json, "humidity_pct", &snapshot.humidity_pct, true) &&
+        zic_json_float(json, "wind_speed_mps", &snapshot.wind_speed_mps, true) &&
+        zic_json_float(json, "solar_radiation_mj_m2", &snapshot.solar_radiation_mj_m2, true) &&
+        zic_json_float(json, "rain_mm_last_24h", &snapshot.rain_mm_last_24h, true) &&
+        zic_json_float(json, "rain_probability_pct", &snapshot.rain_probability_pct, true) &&
+        zic_json_float(json, "uv_index", &snapshot.uv_index, false);
+    snapshot.valid = valid;
+
+    bool updated = false;
+    if (valid && xSemaphoreTake(s_ctx_lock, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        updated = weather_manager_update(&s_ctx.weather_manager, &snapshot);
+        if (updated) {
+            storage_manager_append(&s_ctx.storage_manager, snapshot.timestamp,
+                                   ZIC_LOG_WEATHER, "weather snapshot updated");
+        }
+        xSemaphoreGive(s_ctx_lock);
+    }
+    cJSON_Delete(json);
+    if (!updated) {
+        httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Weather snapshot rejected");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(request, "application/json");
+    httpd_resp_sendstr(request, "{\"status\":\"accepted\"}");
+    return ESP_OK;
+}
+
 static bool zic_ota_http_start(void)
 {
     if (s_ota_http_server != NULL) {
@@ -317,7 +402,20 @@ static bool zic_ota_http_start(void)
         return false;
     }
 
-    ESP_LOGI(TAG, "HTTP services ready: POST /ota, GET /logs");
+    const httpd_uri_t weather_uri = {
+        .uri = "/weather",
+        .method = HTTP_POST,
+        .handler = zic_weather_http_handler,
+    };
+    err = httpd_register_uri_handler(s_ota_http_server, &weather_uri);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Weather endpoint registration failed: %s", esp_err_to_name(err));
+        httpd_stop(s_ota_http_server);
+        s_ota_http_server = NULL;
+        return false;
+    }
+
+    ESP_LOGI(TAG, "HTTP services ready: POST /ota, GET /logs, POST /weather");
     return true;
 }
 
@@ -705,13 +803,12 @@ static void zic_runtime_init_context(zic_app_context_t *ctx)
     storage_manager_append(&ctx->storage_manager, zic_log_timestamp(), ZIC_LOG_AUDIT,
                            "controller boot");
     flow_manager_set_baseline(&ctx->flow_manager, baseline_flow);
-
-    ctx->weather_snapshot.rain_mm_last_24h = 0.0f;
-    ctx->weather_snapshot.rain_probability_pct = 20.0f;
-    ctx->weather_snapshot.humidity_pct = 55.0f;
-    ctx->weather_snapshot.uv_index = 8.0f;
-    ctx->weather_snapshot.temperature_c = 33.0f;
-    ctx->weather_snapshot.wind_speed_mps = 3.0f;
+    weather_manager_init(&ctx->weather_manager);
+    weather_manager_set_persistence(&ctx->weather_manager,
+                                    zic_weather_load, zic_weather_save, NULL);
+    if (!weather_manager_restore(&ctx->weather_manager)) {
+        ESP_LOGI(TAG, "No valid cached weather snapshot found");
+    }
     zic_mqtt_topic_build("state", ctx->state_topic, sizeof(ctx->state_topic));
     zic_v2_state_topic(ZIC_V2_DEVICE_ID, s_v2_state_topic, sizeof(s_v2_state_topic));
     zic_v2_outcome_topic(ZIC_V2_DEVICE_ID, s_v2_outcome_topic, sizeof(s_v2_outcome_topic));
@@ -883,8 +980,10 @@ static void zic_scheduler_start_due_program(zic_app_context_t *ctx)
         }
 
         ctx->last_program_trigger_minute[program_index] = minute_key;
-        if (program.weather_skip_enabled &&
-            ctx->weather_snapshot.rain_probability_pct >= program.rain_skip_threshold_pct) {
+        weather_snapshot_t weather;
+        bool weather_available = weather_manager_get_snapshot(&ctx->weather_manager, epoch, &weather);
+        if (program.weather_skip_enabled && weather_available &&
+            weather.rain_probability_pct >= program.rain_skip_threshold_pct) {
             ESP_LOGI(TAG, "Program %u skipped due to rain probability", program_index + 1);
             continue;
         }
@@ -914,9 +1013,31 @@ static void zic_scheduler_advance_program(zic_app_context_t *ctx)
 
     while (ctx->scheduled_next_zone_index < CONFIG_MAX_ZONES) {
         uint8_t zone_index = ctx->scheduled_next_zone_index++;
-        uint32_t runtime_seconds =
+        config_zone_t zone;
+        if (config_get_zone(zone_index, &zone) != CFG_OK || !zone.enabled) {
+            continue;
+        }
+        uint32_t base_runtime_seconds =
             (uint32_t)ctx->scheduled_program.zone_runtime_min[zone_index] * 60u;
-        runtime_seconds = runtime_seconds * ctx->scheduled_program.seasonal_adjust_pct / 100u;
+        uint16_t seasonal_percent =
+            (uint16_t)ctx->scheduled_program.seasonal_adjust_pct * zone.seasonal_factor_pct / 100u;
+        uint32_t epoch = 0;
+        weather_snapshot_t weather;
+        const weather_snapshot_t *weather_ptr = NULL;
+        if (hal_time_get_epoch(&epoch) == HAL_OK &&
+            weather_manager_get_snapshot(&ctx->weather_manager, epoch, &weather)) {
+            weather_ptr = &weather;
+        }
+        weather_adjustment_t adjustment;
+        (void)weather_manager_adjust_runtime(weather_ptr, epoch, base_runtime_seconds,
+                                             ctx->et_output.daily_et_mm,
+                                             zone.et_crop_coefficient_x100,
+                                             seasonal_percent, &adjustment);
+        uint32_t runtime_seconds = adjustment.runtime_seconds;
+        if (adjustment.skip_watering) {
+            storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
+                                   ZIC_LOG_WEATHER, "zone skipped by weather adjustment");
+        }
         if (runtime_seconds != 0 && zic_runtime_start_zone(ctx, zone_index + 1, runtime_seconds)) {
             ESP_LOGI(TAG, "Program %u running zone %u for %lu seconds",
                      ctx->scheduled_program_index + 1, zone_index + 1,
@@ -1005,15 +1126,27 @@ static void zic_control_task(void *arg)
                                          irrigation_active,
                                          (uint64_t)(esp_timer_get_time() / 1000),
                                          &s_ctx.alarm_manager);
-        weather_manager_evaluate(&s_ctx.weather_snapshot, &s_ctx.weather_decision);
-
-        et_input_t et_input = {
-            .temperature_c = s_ctx.weather_snapshot.temperature_c,
-            .humidity_pct = s_ctx.weather_snapshot.humidity_pct,
-            .wind_speed_mps = s_ctx.weather_snapshot.wind_speed_mps,
-            .solar_radiation_mj_m2 = 18.0f,
-        };
-        et_engine_compute(&et_input, &s_ctx.et_output);
+        uint32_t weather_now = 0;
+        weather_snapshot_t fresh_weather;
+        if (hal_time_get_epoch(&weather_now) == HAL_OK &&
+            weather_manager_get_snapshot(&s_ctx.weather_manager, weather_now, &fresh_weather)) {
+            s_ctx.weather_snapshot = fresh_weather;
+            weather_manager_evaluate(&fresh_weather, &s_ctx.weather_decision);
+            if (fresh_weather.timestamp != s_ctx.last_weather_calculation_timestamp) {
+                et_input_t et_input = {
+                    .temperature_c = fresh_weather.temperature_c,
+                    .humidity_pct = fresh_weather.humidity_pct,
+                    .wind_speed_mps = fresh_weather.wind_speed_mps,
+                    .solar_radiation_mj_m2 = fresh_weather.solar_radiation_mj_m2,
+                };
+                et_engine_compute(&et_input, &s_ctx.et_output);
+                s_ctx.last_weather_calculation_timestamp = fresh_weather.timestamp;
+            }
+        } else {
+            s_ctx.weather_snapshot = (weather_snapshot_t){0};
+            s_ctx.weather_decision = (weather_decision_t){0};
+            s_ctx.et_output = (et_output_t){0};
+        }
 
         if (alarm_manager_has_severity(&s_ctx.alarm_manager, ZIC_ALARM_CRITICAL)) {
             if (!s_ctx.safety_fault_latched) {
