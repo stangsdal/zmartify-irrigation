@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 option(ZIC_HOST_TESTS "Build host-side unit and acceptance tests" OFF)
+option(ZIC_OTA_FORCE_HEALTH_FAILURE "Build an intentionally unhealthy OTA rollback test image" OFF)
 
 if(ZIC_HOST_TESTS)
 	project(zmartify_irrigation_host_tests C)

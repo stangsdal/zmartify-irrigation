@@ -1,5 +1,7 @@
 build/
 build-host-tests/
+build-step3/
+build-ota-rollback-test/
 managed_components/
 .vscode/
 .DS_Store
@@ -7,3 +9,4 @@ sdkconfig
 sdkconfig.old
 *.log
 main/wifi_credentials.local.h
+keys/*.pem

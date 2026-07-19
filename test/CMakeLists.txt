@@ -52,6 +52,11 @@ zic_add_host_test(test_et_engine
 target_include_directories(test_et_engine PRIVATE ../components/et_engine/include)
 target_link_libraries(test_et_engine PRIVATE m)
 
+zic_add_host_test(test_ota_policy
+    test_ota_policy.c
+    ../components/ota_manager/src/ota_policy.c)
+target_include_directories(test_ota_policy PRIVATE ../components/ota_manager/include)
+
 zic_add_host_test(test_acceptance_safety_shutdown
     test_acceptance_safety_shutdown.c
     ../components/alarm_manager/src/alarm_manager.c

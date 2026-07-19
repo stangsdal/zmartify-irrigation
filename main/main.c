@@ -18,6 +18,7 @@
 #include "freertos/task.h"
 #include "alarm_manager.h"
 #include "config_manager.h"
+#include "diagnostics_manager.h"
 #include "et_engine.h"
 #include "event_bus.h"
 #include "flow_manager.h"
@@ -47,6 +48,10 @@ static const uint8_t zic_wifi_password[] = {0};
 #define ZIC_RELAY_SELF_TEST 0
 #endif
 
+#ifndef ZIC_OTA_FORCE_HEALTH_FAILURE
+#define ZIC_OTA_FORCE_HEALTH_FAILURE 0
+#endif
+
 static const char *TAG = "zic_main";
 static zic_log_entry_t s_log_buffer[ZIC_LOG_PERSIST_CAPACITY];
 
@@ -60,6 +65,7 @@ static zic_log_entry_t s_log_buffer[ZIC_LOG_PERSIST_CAPACITY];
 
 #define ZIC_EVENT_ENGINE_READY BIT0
 #define ZIC_EVENT_FAULT BIT1
+#define ZIC_EVENT_OTA_CONFIRMED BIT2
 
 #define ZIC_DEFAULT_BROKER_URI "mqtt://192.168.10.2:1883"
 
@@ -138,6 +144,75 @@ static uint32_t zic_log_timestamp(void)
     return hal_time_is_synced() && hal_time_get_epoch(&epoch) == HAL_OK ? epoch : 0;
 }
 
+static void zic_ota_audit(void *context, const char *message)
+{
+    zic_app_context_t *ctx = context;
+    if (ctx == NULL || message == NULL || s_ctx_lock == NULL ||
+        xSemaphoreTake(s_ctx_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        return;
+    }
+
+    storage_manager_append(&ctx->storage_manager, zic_log_timestamp(), ZIC_LOG_AUDIT, message);
+    (void)storage_manager_flush(&ctx->storage_manager, zic_log_timestamp());
+    xSemaphoreGive(s_ctx_lock);
+}
+
+static bool zic_diagnostics_snapshot(void *context,
+                                     uint8_t *active_alarms,
+                                     uint8_t *critical_alarms,
+                                     uint32_t *log_entries,
+                                     bool *subsystems_ready)
+{
+    zic_app_context_t *ctx = context;
+    if (ctx == NULL || active_alarms == NULL || critical_alarms == NULL ||
+        log_entries == NULL || subsystems_ready == NULL || s_ctx_lock == NULL ||
+        xSemaphoreTake(s_ctx_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        return false;
+    }
+
+    *active_alarms = 0;
+    *critical_alarms = 0;
+    for (size_t index = 0; index < ZIC_MAX_ACTIVE_ALARMS; ++index) {
+        const zic_alarm_t *alarm = &ctx->alarm_manager.alarms[index];
+        if (alarm->active) {
+            ++*active_alarms;
+            if (alarm->severity == ZIC_ALARM_CRITICAL) {
+                ++*critical_alarms;
+            }
+        }
+    }
+    *log_entries = (uint32_t)storage_manager_count(&ctx->storage_manager);
+    EventBits_t runtime_bits = xEventGroupGetBits(s_runtime_events);
+    *subsystems_ready = (runtime_bits & ZIC_EVENT_ENGINE_READY) != 0 &&
+        (runtime_bits & ZIC_EVENT_FAULT) == 0;
+#if ZIC_OTA_FORCE_HEALTH_FAILURE
+    *subsystems_ready = false;
+#endif
+    xSemaphoreGive(s_ctx_lock);
+    return true;
+}
+
+static void zic_diagnostics_raise_critical(void *context)
+{
+    zic_app_context_t *ctx = context;
+    if (ctx == NULL || s_ctx_lock == NULL ||
+        xSemaphoreTake(s_ctx_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        return;
+    }
+    alarm_manager_raise(&ctx->alarm_manager,
+                        ZIC_ALARM_IRRIGATION_FAULT,
+                        ZIC_ALARM_CRITICAL);
+    xSemaphoreGive(s_ctx_lock);
+}
+
+static void zic_diagnostics_ota_confirmed(void *context)
+{
+    (void)context;
+    if (s_runtime_events != NULL) {
+        xEventGroupSetBits(s_runtime_events, ZIC_EVENT_OTA_CONFIRMED);
+    }
+}
+
 static bool zic_log_load(void *context, void *data, size_t *length)
 {
     (void)context;
@@ -169,6 +244,39 @@ static void zic_ota_restart_task(void *arg)
     esp_restart();
 }
 
+static bool zic_ota_runtime_is_idle(void)
+{
+    if (s_ctx_lock == NULL || xSemaphoreTake(s_ctx_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        return false;
+    }
+    bool idle = irrigation_engine_is_idle(&s_ctx.engine) && !s_ctx.scheduled_program_active;
+    xSemaphoreGive(s_ctx_lock);
+    return idle;
+}
+
+static void zic_remote_ota_task(void *arg)
+{
+    char *firmware_url = arg;
+    ota_manager_config_t ota_cfg = {
+        .firmware_url = firmware_url,
+        .cert_pem = NULL,
+    };
+
+    (void)event_bus_publish(EVENT_OTA_STARTED, 0, EVENT_PRIORITY_HIGH, 0, NULL, 0);
+    zic_ota_audit(&s_ctx, "ota remote download started");
+    if (ota_manager_perform(&ota_cfg)) {
+        zic_ota_audit(&s_ctx, "ota signed image queued; health confirmation pending");
+        free(firmware_url);
+        zic_ota_restart_task(NULL);
+        return;
+    }
+
+    zic_ota_audit(&s_ctx, "ota remote update rejected");
+    (void)event_bus_publish(EVENT_OTA_FAILED, 0, EVENT_PRIORITY_HIGH, 0, NULL, 0);
+    free(firmware_url);
+    vTaskDelete(NULL);
+}
+
 static esp_err_t zic_ota_http_handler(httpd_req_t *request)
 {
     const esp_partition_t *partition = esp_ota_get_next_update_partition(NULL);
@@ -177,11 +285,21 @@ static esp_err_t zic_ota_http_handler(httpd_req_t *request)
         httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid firmware size");
         return ESP_FAIL;
     }
+    if (!zic_ota_runtime_is_idle()) {
+        httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Irrigation must be idle for OTA");
+        return ESP_FAIL;
+    }
+    if (!ota_manager_transition(OTA_STATE_DOWNLOADING)) {
+        httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "OTA already in progress");
+        return ESP_FAIL;
+    }
+    zic_ota_audit(&s_ctx, "ota direct upload started");
 
     esp_ota_handle_t ota_handle = 0;
     esp_err_t err = esp_ota_begin(partition, request->content_len, &ota_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Direct OTA begin failed: %s", esp_err_to_name(err));
+        (void)ota_manager_transition(OTA_STATE_FAILED);
         httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA begin failed");
         return ESP_FAIL;
     }
@@ -197,6 +315,8 @@ static esp_err_t zic_ota_http_handler(httpd_req_t *request)
         if (received <= 0) {
             ESP_LOGE(TAG, "Direct OTA upload interrupted");
             esp_ota_abort(ota_handle);
+            (void)ota_manager_transition(OTA_STATE_FAILED);
+            zic_ota_audit(&s_ctx, "ota direct upload interrupted");
             return ESP_FAIL;
         }
 
@@ -204,22 +324,29 @@ static esp_err_t zic_ota_http_handler(httpd_req_t *request)
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Direct OTA write failed: %s", esp_err_to_name(err));
             esp_ota_abort(ota_handle);
+            (void)ota_manager_transition(OTA_STATE_FAILED);
+            zic_ota_audit(&s_ctx, "ota direct upload write failed");
             httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA write failed");
             return ESP_FAIL;
         }
         remaining -= received;
     }
 
+    (void)ota_manager_transition(OTA_STATE_VERIFYING);
     err = esp_ota_end(ota_handle);
     if (err == ESP_OK) {
         err = esp_ota_set_boot_partition(partition);
     }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Direct OTA image validation failed: %s", esp_err_to_name(err));
+        (void)ota_manager_transition(OTA_STATE_FAILED);
+        zic_ota_audit(&s_ctx, "ota image signature or integrity rejected");
         httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid firmware image");
         return ESP_FAIL;
     }
 
+    (void)ota_manager_transition(OTA_STATE_PENDING_REBOOT);
+    zic_ota_audit(&s_ctx, "ota signed image queued; health confirmation pending");
     ESP_LOGI(TAG, "Direct OTA complete; rebooting into %s", partition->label);
     httpd_resp_set_type(request, "text/plain");
     httpd_resp_sendstr(request, "OTA complete; rebooting\n");
@@ -968,6 +1095,13 @@ static bool zic_runtime_start_zone(zic_app_context_t *ctx,
                                    uint8_t zone_id,
                                    uint32_t requested_runtime_seconds)
 {
+    ota_state_t ota_state = ota_manager_get_state();
+    if ((xEventGroupGetBits(s_runtime_events) & ZIC_EVENT_OTA_CONFIRMED) == 0 ||
+        (ota_state != OTA_STATE_IDLE && ota_state != OTA_STATE_VALID &&
+         ota_state != OTA_STATE_FAILED)) {
+        return false;
+    }
+
     config_zone_t zone;
     config_system_t system;
     if (zone_id == 0 || config_get_zone(zone_id - 1, &zone) != CFG_OK ||
@@ -1040,12 +1174,24 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
         zic_publish_v2_outcome(ctx, "rain.delay_cleared", "info", "accepted", NULL, 0);
         break;
     case ZIC_CMD_TRIGGER_OTA: {
-        ota_manager_config_t ota_cfg = {
-            .firmware_url = cmd->ota_url,
-            .cert_pem = NULL,
-        };
-        if (cmd->ota_url[0] != '\0') {
-            ota_manager_perform(&ota_cfg);
+        if (cmd->ota_url[0] == '\0' || !irrigation_engine_is_idle(&ctx->engine) ||
+            ctx->scheduled_program_active) {
+            storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
+                                   ZIC_LOG_AUDIT, "ota rejected; irrigation not idle");
+            break;
+        }
+
+        char *firmware_url = malloc(strlen(cmd->ota_url) + 1U);
+        if (firmware_url == NULL) {
+            storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
+                                   ZIC_LOG_AUDIT, "ota rejected; task allocation failed");
+            break;
+        }
+        strcpy(firmware_url, cmd->ota_url);
+        if (xTaskCreate(zic_remote_ota_task, "ota_remote", 8192, firmware_url, 4, NULL) != pdPASS) {
+            free(firmware_url);
+            storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
+                                   ZIC_LOG_AUDIT, "ota rejected; task creation failed");
         }
         break;
     }
@@ -1056,7 +1202,8 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
 
 static void zic_scheduler_start_due_program(zic_app_context_t *ctx)
 {
-    if (!hal_time_is_synced() || !irrigation_engine_is_idle(&ctx->engine) ||
+    if ((xEventGroupGetBits(s_runtime_events) & ZIC_EVENT_OTA_CONFIRMED) == 0 ||
+        !hal_time_is_synced() || !irrigation_engine_is_idle(&ctx->engine) ||
         ctx->scheduled_program_active) {
         return;
     }
@@ -1429,6 +1576,10 @@ void app_main(void)
     hmi_board_status_t hmi_status = {0};
 
     ESP_LOGI(TAG, "Zmartify Irrigation Controller booting");
+    ota_manager_init();
+#if ZIC_OTA_FORCE_HEALTH_FAILURE
+    ESP_LOGE(TAG, "OTA ROLLBACK TEST IMAGE: health confirmation is forced to fail");
+#endif
 
     esp_err_t nvs_err = nvs_flash_init();
     if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -1463,6 +1614,18 @@ void app_main(void)
         s_watersensor_lock == NULL) {
         ESP_LOGE(TAG, "Failed to allocate runtime resources");
         return;
+    }
+
+    const esp_partition_t *running_partition = esp_ota_get_running_partition();
+    esp_ota_img_states_t running_image_state = ESP_OTA_IMG_UNDEFINED;
+    bool ota_confirmation_pending = running_partition != NULL &&
+        esp_ota_get_state_partition(running_partition, &running_image_state) == ESP_OK &&
+        running_image_state == ESP_OTA_IMG_PENDING_VERIFY;
+    if (ota_confirmation_pending) {
+        (void)ota_manager_transition(OTA_STATE_PENDING_CONFIRMATION);
+        ESP_LOGW(TAG, "OTA image unconfirmed; irrigation inhibited until health check passes");
+    } else {
+        xEventGroupSetBits(s_runtime_events, ZIC_EVENT_OTA_CONFIRMED);
     }
 
     if (!event_bus_init()) {
@@ -1506,4 +1669,15 @@ void app_main(void)
 
     xTaskCreate(zic_control_task, "zic_ctrl", ZIC_CTRL_TASK_STACK, NULL, ZIC_CTRL_TASK_PRIO, NULL);
     xTaskCreate(zic_telemetry_task, "zic_telem", ZIC_TELEM_TASK_STACK, NULL, ZIC_TELEM_TASK_PRIO, NULL);
+
+    const diagnostics_manager_config_t diagnostics_config = {
+        .snapshot = zic_diagnostics_snapshot,
+        .raise_critical_alarm = zic_diagnostics_raise_critical,
+        .ota_confirmed = zic_diagnostics_ota_confirmed,
+        .audit = zic_ota_audit,
+        .context = &s_ctx,
+    };
+    if (!diagnostics_manager_init(&diagnostics_config)) {
+        ESP_LOGE(TAG, "Diagnostics Manager initialization failed; OTA images remain unconfirmed");
+    }
 }

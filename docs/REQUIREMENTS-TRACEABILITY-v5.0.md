@@ -117,7 +117,7 @@ The MEP reuses `UI-001..005` for two different requirement sets. This RTM uses o
 | FR-PER-002 | Touch response below 100 ms | `Not Verified` | Touch/LVGL runtime exists | Instrumented latency test absent | 9 |
 | FR-PER-003 | MQTT alarm publication within 1 second | `Not Verified` | Alarm publication path exists | Timed broker integration test absent | 7 |
 | FR-PER-004 | Flow updates every second or faster | `Not Verified` | Online WaterSensor poll target is 500 ms | Device timing/age evidence absent | 10 |
-| FR-MNT-001 | Support OTA firmware updates | `Partial` | Direct and command-triggered OTA paths | Live OTA proven; trust and rollback incomplete | 3 |
+| FR-MNT-001 | Support OTA firmware updates | `Partial` | Signed direct and HTTPS command-triggered OTA paths with explicit states | Signature rejection automated; physical rollback and interruption FAT pending | 3, 10 |
 | FR-MNT-002 | Export complete controller configuration | `Missing` | Log export is not configuration export | No round-trip test | 8 |
 | FR-MNT-003 | Restore controller configuration | `Missing` | Network update endpoint is not full restore | No migration/restore test | 8 |
 | FR-MNT-004 | Hardware self-test available from service menu | `Partial` | Relay test script exists outside HMI | No service-menu self-test acceptance | 9 |
@@ -226,7 +226,7 @@ destination. Each source ID is written explicitly to permit machine coverage che
 | Volume 2, Chapter 4 HAL | HAL-001, HAL-002, HAL-003, HAL-004, HAL-005, HAL-006 | `Partial` | HAL boundaries exist for active hardware; API and hardware-verification breadth incomplete | 5, 10 |
 | Volume 2, Chapter 7 relay architecture | REL-001, REL-002, REL-003, REL-004, REL-005, REL-006 | `Partial` | Exclusive relay ownership and interlocks exist; electrical/response diagnostics incomplete | 5 |
 | Volume 2, Chapter 13 MQTT architecture | MQTT-001, MQTT-002, MQTT-003, MQTT-004 | `Partial` | MQTT transport and v2 message subset exist; full architectural contract is open | 7 |
-| Volume 2/3 security architecture | SEC-001, SEC-002, SEC-003, SEC-004, SEC-005, SEC-006 | `Partial` | MQTT TLS support exists; HTTP auth, authorization, replay controls, secure boot and flash encryption are absent | 2, 3, 7 |
+| Volume 2/3 security architecture | SEC-001, SEC-002, SEC-003, SEC-004, SEC-005, SEC-006 | `Partial` | Signed OTA and MQTT TLS exist; HTTP auth, authorization, replay controls, hardware secure boot and flash encryption remain open | 2, 3, 7 |
 | Volume 3, Chapter 1 communications | COM-001, COM-002, COM-003, COM-004, COM-005 | `Partial` | MQTT-first integration exists; reliability/security/compliance evidence incomplete | 7 |
 | Volume 3, Chapter 20 API compliance | API-001, API-002, API-003, API-004, API-005, API-006, API-007, API-008, API-009, API-010 | `Partial` | Supported subset is not yet closed by a broker-backed compliance matrix | 7 |
 | Volume 4, Chapter 1 HMI principles | HMI-001, HMI-002, HMI-003, HMI-004, HMI-005 | `Partial` | Operational LVGL UI exists; full service/safety/usability evidence incomplete | 9 |
@@ -264,7 +264,7 @@ through the following stable chapter-level keys until the source documents assig
 | MEP-V2-C13-MQTT | TLS, topics, QoS, validation, reconnect and discovery | `Partial` | TLS transport/commands exist; full contract tests and discovery incomplete | 7 |
 | MEP-V2-C14-CONFIG | Versioned schema, validation, migration and audit events | `Partial` | CRC/version/config exists; migration resets instead of converting | 4, 8 |
 | MEP-V2-C15-STORAGE | Typed persistent data, retention, integrity and diagnostics | `Partial` | Event/weather persistence exists; full data model/backups incomplete | 6, 8 |
-| MEP-V2-C16-OTA | Trusted download, validation, health confirmation and rollback | `Partial` | OTA works; trust/rollback disabled or disconnected | 3 |
+| MEP-V2-C16-OTA | Trusted download, validation, health confirmation and rollback | `Partial` | RSA-signed updates, HTTPS remote policy, live health confirmation, rollback guard and persistent audit integrated | Physical rollback, interruption and production-key FAT pending | 3, 10 |
 | MEP-V2-C17-DIAG | Authoritative system health, task/resource/event/sensor metrics | `Partial` | Component exists but is not initialized from main and uses legacy/null state | 6 |
 | MEP-V2-C19-SEC | Authentication, authorization, TLS, secure boot and flash encryption | `Missing` | MQTT TLS exists; HTTP auth, secure boot and flash encryption absent | 2, 3 |
 | MEP-V3-MQTT-API | Namespace, schemas, transaction outcomes, QoS and integrations | `Partial` | v2 subset exists; compliance matrix and broker tests absent | 7 |
@@ -307,7 +307,7 @@ Chapter-level rows are not included in these counts.
 The principal release blockers are:
 
 1. unauthenticated HTTP control and OTA endpoints;
-2. incomplete OTA trust, post-boot validation and rollback;
+2. OTA rollback bootloader provisioning and physical failure/interruption evidence;
 3. hardcoded/uncommissioned safety parameters;
 4. missing physical valve/relay response diagnostics;
 5. disconnected/inaccurate system diagnostics;

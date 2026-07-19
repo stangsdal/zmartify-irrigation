@@ -13,6 +13,12 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 cd "$PROJECT_ROOT"
 
+if [[ ! -f "keys/ota_signing_key.pem" ]]; then
+    echo "Error: OTA signing key not found: keys/ota_signing_key.pem"
+    echo "Create a local development key with: ./scripts/setup-ota-signing-key.sh"
+    exit 1
+fi
+
 TARGET="${1:-}"
 CLEAN="${CLEAN:-0}"
 

@@ -14,15 +14,10 @@ set -euo pipefail
 BROKER="${1:-mqtt://192.168.10.2:1883}"
 FIRMWARE_URL="${2:-}"
 
-# If no URL given, try to construct one from a local HTTP server
-if [ -z "$FIRMWARE_URL" ]; then
-    LOCAL_IP=$(ipconfig getifaddr en0 2>/dev/null || ip route get 1 | awk '{print $NF;exit}' 2>/dev/null || echo "192.168.10.1")
-    FIRMWARE_URL="http://${LOCAL_IP}:8070/zmartify_irrigation.bin"
-    echo "No URL given – defaulting to: $FIRMWARE_URL"
-    echo ""
-    echo "Start a local HTTP server first:"
-    echo "  cd build && python3 -m http.server 8070"
-    echo ""
+if [[ "$FIRMWARE_URL" != https://* ]]; then
+    echo "ERROR: a trusted HTTPS firmware URL is required."
+    echo "Usage: $0 [MQTT_BROKER] https://updates.example/firmware.bin"
+    exit 1
 fi
 
 TOPIC="zmartify/irrigation/controller_01/command/ota"

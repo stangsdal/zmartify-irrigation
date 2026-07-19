@@ -9,6 +9,7 @@ idf_component_register(SRCS "main.c"
                              app_update
                              esp_wifi
                              config_manager
+                             diagnostics_manager
                              event_bus
                              flow_manager
                              hmi_board
@@ -28,4 +29,8 @@ idf_component_register(SRCS "main.c"
 
 if(ZIC_RELAY_SELF_TEST)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE ZIC_RELAY_SELF_TEST=1)
+endif()
+
+if(ZIC_OTA_FORCE_HEALTH_FAILURE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE ZIC_OTA_FORCE_HEALTH_FAILURE=1)
 endif()

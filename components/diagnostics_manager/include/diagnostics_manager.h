@@ -39,6 +39,23 @@ typedef struct
     bool     subsystems_ready;    /**< All core subsystems reported healthy */
 } diag_health_t;
 
+typedef bool (*diagnostics_snapshot_fn)(void *context,
+                                        uint8_t *active_alarms,
+                                        uint8_t *critical_alarms,
+                                        uint32_t *log_entries,
+                                        bool *subsystems_ready);
+typedef void (*diagnostics_action_fn)(void *context);
+typedef void (*diagnostics_audit_fn)(void *context, const char *message);
+
+typedef struct
+{
+    diagnostics_snapshot_fn snapshot;
+    diagnostics_action_fn raise_critical_alarm;
+    diagnostics_action_fn ota_confirmed;
+    diagnostics_audit_fn audit;
+    void *context;
+} diagnostics_manager_config_t;
+
 /* ─── API ─────────────────────────────────────────────────────────────── */
 
 /**
@@ -49,7 +66,7 @@ typedef struct
  *
  * @return true on success
  */
-bool diagnostics_manager_init(void);
+bool diagnostics_manager_init(const diagnostics_manager_config_t *config);
 
 /**
  * @brief Collect a current health snapshot.

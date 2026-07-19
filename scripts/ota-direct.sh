@@ -14,7 +14,30 @@ if [[ ! -f "$FIRMWARE" ]]; then
     exit 1
 fi
 
-echo "Uploading $FIRMWARE to http://$DEVICE_IP/ota"
+VERIFY_KEY="${OTA_VERIFY_KEY:-keys/ota_signing_key.pem}"
+if [[ ! -f "$VERIFY_KEY" ]]; then
+    echo "Error: OTA verification key not found: $VERIFY_KEY"
+    echo "Set OTA_VERIFY_KEY to the matching public or private PEM key."
+    exit 1
+fi
+if ! command -v espsecure >/dev/null 2>&1; then
+    echo "Error: espsecure is unavailable; source the ESP-IDF export script first."
+    exit 1
+fi
+
+verify_dir=$(mktemp -d)
+trap 'rm -rf "$verify_dir"' EXIT
+PUBLIC_KEY="$VERIFY_KEY"
+if grep -q "PRIVATE KEY" "$VERIFY_KEY"; then
+    PUBLIC_KEY="$verify_dir/public.pem"
+    espsecure extract-public-key --version 2 --keyfile "$VERIFY_KEY" "$PUBLIC_KEY" >/dev/null
+fi
+if ! espsecure verify-signature --version 2 --keyfile "$PUBLIC_KEY" "$FIRMWARE"; then
+    echo "Error: unsigned, corrupt, or untrusted firmware: $FIRMWARE"
+    exit 1
+fi
+
+echo "Signature verified; uploading $FIRMWARE to http://$DEVICE_IP/ota"
 curl --fail --show-error --connect-timeout 10 --max-time 180 \
     -H "Expect:" \
     -H "Content-Type: application/octet-stream" \
@@ -36,9 +59,9 @@ if [[ "$went_offline" != true ]]; then
 fi
 
 for attempt in {1..45}; do
-    http_code=$(curl --silent --output /dev/null --max-time 2 -X POST \
-        --write-out '%{http_code}' "http://$DEVICE_IP/ota" || true)
-    if [[ "$http_code" == "400" ]]; then
+    http_code=$(curl --silent --output /dev/null --max-time 2 \
+        --write-out '%{http_code}' "http://$DEVICE_IP/logs" || true)
+    if [[ "$http_code" == "200" ]]; then
         echo "Controller application is healthy at $DEVICE_IP"
         exit 0
     fi

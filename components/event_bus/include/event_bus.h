@@ -113,6 +113,7 @@ typedef enum
     EVENT_OTA_STARTED = 0x0800,
     EVENT_OTA_COMPLETE = 0x0801,
     EVENT_OTA_FAILED = 0x0802,
+    EVENT_OTA_ROLLBACK = 0x0803,
 
     // System events
     EVENT_SYSTEM_BOOT = 0x0900,

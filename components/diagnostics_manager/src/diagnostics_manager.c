@@ -4,9 +4,8 @@
  */
 
 #include "diagnostics_manager.h"
-#include "alarm_manager.h"
-#include "storage_manager.h"
 #include "event_bus.h"
+#include "ota_manager.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_system.h"
@@ -24,33 +23,32 @@ static const char *TAG = "diag_mgr";
 #define HEAP_CRITICAL_PCT     90u     /**< Heap utilisation above this = unhealthy  */
 
 static bool s_initialized = false;
-
-static bool ota_rollback_supported(void)
-{
-#if defined(CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE) && CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
-    const esp_partition_t *running = esp_ota_get_running_partition();
-    const esp_partition_t *otadata = esp_partition_find_first(
-        ESP_PARTITION_TYPE_DATA,
-        ESP_PARTITION_SUBTYPE_DATA_OTA,
-        NULL);
-
-    if (running == NULL || otadata == NULL)
-    {
-        return false;
-    }
-
-    return running->subtype >= ESP_PARTITION_SUBTYPE_APP_OTA_0
-        && running->subtype < ESP_PARTITION_SUBTYPE_APP_OTA_MAX;
-#else
-    return false;
-#endif
-}
+static diagnostics_manager_config_t s_config;
 
 /* ─── OTA rollback guard task ─────────────────────────────────────────── */
 
 static void ota_health_check_task(void *arg)
 {
     (void)arg;
+
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_ota_img_states_t image_state = ESP_OTA_IMG_UNDEFINED;
+    if (running == NULL || esp_ota_get_state_partition(running, &image_state) != ESP_OK ||
+        image_state != ESP_OTA_IMG_PENDING_VERIFY)
+    {
+        ESP_LOGD(TAG, "Running image does not require OTA confirmation");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    if (ota_manager_get_state() != OTA_STATE_PENDING_CONFIRMATION)
+    {
+        (void)ota_manager_transition(OTA_STATE_PENDING_CONFIRMATION);
+    }
+    if (s_config.audit != NULL)
+    {
+        s_config.audit(s_config.context, "ota pending health confirmation");
+    }
 
     ESP_LOGI(TAG, "OTA health check: waiting %u ms before confirming...",
              OTA_CONFIRM_DELAY_MS);
@@ -62,7 +60,17 @@ static void ota_health_check_task(void *arg)
         esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
         if (err == ESP_OK)
         {
-            ESP_LOGI(TAG, "OTA firmware confirmed valid – rollback cancelled");
+            (void)ota_manager_transition(OTA_STATE_VALID);
+            if (s_config.audit != NULL)
+            {
+                s_config.audit(s_config.context, "ota image confirmed valid");
+            }
+            if (s_config.ota_confirmed != NULL)
+            {
+                s_config.ota_confirmed(s_config.context);
+            }
+            (void)event_bus_publish(EVENT_OTA_COMPLETE, 0, EVENT_PRIORITY_HIGH, 0, NULL, 0);
+            ESP_LOGI(TAG, "OTA firmware confirmed valid; rollback cancelled");
         }
         else if (err == ESP_ERR_OTA_VALIDATE_FAILED)
         {
@@ -76,17 +84,20 @@ static void ota_health_check_task(void *arg)
     }
     else
     {
-        alarm_raise(ALARM_IRRIGATION_FAULT, ALARM_SEV_CRITICAL, 0);
-
-        if (ota_rollback_supported())
+        if (s_config.raise_critical_alarm != NULL)
         {
-            ESP_LOGE(TAG, "Health check FAILED - triggering OTA rollback");
-            esp_ota_mark_app_invalid_rollback_and_reboot();
+            s_config.raise_critical_alarm(s_config.context);
         }
-        else
+        (void)ota_manager_transition(OTA_STATE_ROLLING_BACK);
+        if (s_config.audit != NULL)
         {
-            ESP_LOGW(TAG, "Health check FAILED - rollback unavailable (single-app or rollback disabled)");
+            s_config.audit(s_config.context, "ota health failed; rollback requested");
         }
+        (void)event_bus_publish(EVENT_OTA_ROLLBACK, 0, EVENT_PRIORITY_CRITICAL, 0, NULL, 0);
+        ESP_LOGE(TAG, "Health check failed; triggering OTA rollback");
+        esp_err_t err = esp_ota_mark_app_invalid_rollback_and_reboot();
+        ESP_LOGE(TAG, "OTA rollback failed: %s", esp_err_to_name(err));
+        (void)ota_manager_transition(OTA_STATE_FAILED);
     }
 
     vTaskDelete(NULL);
@@ -94,15 +105,24 @@ static void ota_health_check_task(void *arg)
 
 /* ─── Public API ──────────────────────────────────────────────────────── */
 
-bool diagnostics_manager_init(void)
+bool diagnostics_manager_init(const diagnostics_manager_config_t *config)
 {
     if (s_initialized)
     {
         return true;
     }
 
-    /* Start OTA rollback guard task at lowest priority */
-    xTaskCreate(ota_health_check_task, "ota_guard", 3072, NULL, 1, NULL);
+    if (config == NULL || config->snapshot == NULL)
+    {
+        return false;
+    }
+
+    s_config = *config;
+    if (xTaskCreate(ota_health_check_task, "ota_guard", 3072, NULL, 1, NULL) != pdPASS)
+    {
+        memset(&s_config, 0, sizeof(s_config));
+        return false;
+    }
 
     s_initialized = true;
     ESP_LOGI(TAG, "Diagnostics Manager initialized (OTA guard active)");
@@ -131,9 +151,14 @@ bool diagnostics_get_health(diag_health_t *out)
         out->heap_utilisation_pct = (uint8_t)((used * 100u) / out->heap_total_bytes);
     }
 
-    /* Alarms */
-    out->active_alarms   = alarm_active_count();
-    out->critical_alarms = alarm_active_count_by_severity(ALARM_SEV_CRITICAL);
+    if (!s_config.snapshot(s_config.context,
+                           &out->active_alarms,
+                           &out->critical_alarms,
+                           &out->log_entries,
+                           &out->subsystems_ready))
+    {
+        return false;
+    }
 
     /* Event bus */
     event_bus_stats_t stats;
@@ -145,9 +170,6 @@ bool diagnostics_get_health(diag_health_t *out)
 
     /* Misc */
     out->reset_reason    = (uint8_t)esp_reset_reason();
-    out->log_entries     = (uint32_t)storage_manager_count(NULL);
-    out->subsystems_ready = (out->critical_alarms == 0);
-
     return true;
 }
 

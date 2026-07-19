@@ -9,6 +9,5 @@ idf_component_register(
         heap
         app_update
         event_bus
-        alarm_manager
-        storage_manager
+        ota_manager
 )

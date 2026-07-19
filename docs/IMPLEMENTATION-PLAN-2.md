@@ -344,7 +344,7 @@ For each step:
 |---|---|---|
 | 1. Living RTM | Complete | `Plan 2 Step 1: Establish MEP requirements traceability` |
 | 2. HTTP authentication | Not started | - |
-| 3. OTA trust and rollback | Not started | - |
+| 3. OTA trust and rollback | Implementation complete; hardware verification pending | `Plan 2 Step 3: Enforce trusted OTA and rollback` |
 | 4. Hydraulic safety configuration | Not started | - |
 | 5. Relay and valve diagnostics | Not started | - |
 | 6. Integrated diagnostics | Not started | - |
