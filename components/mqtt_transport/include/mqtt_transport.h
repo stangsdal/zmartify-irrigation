@@ -18,6 +18,7 @@ typedef struct {
     const char *client_id;
     const char *username;
     const char *password;
+    bool use_crt_bundle;
     const char **subscribe_topics;
     size_t subscribe_topic_count;
     mqtt_transport_message_cb_t on_message;

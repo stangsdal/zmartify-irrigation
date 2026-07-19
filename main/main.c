@@ -62,7 +62,6 @@ static zic_log_entry_t s_log_buffer[ZIC_LOG_PERSIST_CAPACITY];
 #define ZIC_EVENT_FAULT BIT1
 
 #define ZIC_DEFAULT_BROKER_URI "mqtt://192.168.10.2:1883"
-#define ZIC_DEFAULT_CLIENT_ID "zic-controller-01"
 
 /* Device identity for Zmartify v2 topics; must match the edge registry
  * device_id assigned during onboarding (lowercase, hyphenated). */
@@ -291,6 +290,89 @@ static esp_err_t zic_logs_http_handler(httpd_req_t *request)
     return result;
 }
 
+static bool zic_json_copy_string(const cJSON *root, const char *key, char *out, size_t out_len)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, key);
+    if (!cJSON_IsString(item) || item->valuestring == NULL) {
+        return true;
+    }
+    size_t len = strlen(item->valuestring);
+    if (len >= out_len) {
+        return false;
+    }
+    memcpy(out, item->valuestring, len + 1U);
+    return true;
+}
+
+static esp_err_t zic_network_config_http_handler(httpd_req_t *request)
+{
+    char body[512];
+    if (request->content_len <= 0 || request->content_len >= (int)sizeof(body)) {
+        httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid config payload size");
+        return ESP_FAIL;
+    }
+
+    int received_total = 0;
+    while (received_total < request->content_len) {
+        int received = httpd_req_recv(request,
+                                      body + received_total,
+                                      request->content_len - received_total);
+        if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+            continue;
+        }
+        if (received <= 0) {
+            httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid config payload");
+            return ESP_FAIL;
+        }
+        received_total += received;
+    }
+    body[received_total] = '\0';
+
+    cJSON *json = cJSON_Parse(body);
+    if (json == NULL) {
+        httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    config_network_t network;
+    if (config_get_network(&network) != CFG_OK) {
+        cJSON_Delete(json);
+        httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Config not ready");
+        return ESP_FAIL;
+    }
+
+    bool ok = true;
+    ok = ok && zic_json_copy_string(json, "mqtt_broker_uri", network.mqtt_broker_uri, sizeof(network.mqtt_broker_uri));
+    ok = ok && zic_json_copy_string(json, "mqtt_uri", network.mqtt_broker_uri, sizeof(network.mqtt_broker_uri));
+    ok = ok && zic_json_copy_string(json, "mqtt_username", network.mqtt_username, sizeof(network.mqtt_username));
+    ok = ok && zic_json_copy_string(json, "mqtt_password", network.mqtt_password, sizeof(network.mqtt_password));
+    ok = ok && zic_json_copy_string(json, "ntp_server", network.ntp_server, sizeof(network.ntp_server));
+    ok = ok && zic_json_copy_string(json, "timezone", network.timezone, sizeof(network.timezone));
+
+    const cJSON *tls = cJSON_GetObjectItemCaseSensitive(json, "mqtt_tls_enabled");
+    if (cJSON_IsBool(tls)) {
+        network.mqtt_tls_enabled = cJSON_IsTrue(tls);
+    }
+    const cJSON *port = cJSON_GetObjectItemCaseSensitive(json, "mqtt_port");
+    if (cJSON_IsNumber(port) && port->valuedouble >= 0 && port->valuedouble <= 65535) {
+        network.mqtt_port = (uint16_t)port->valuedouble;
+    }
+
+    cJSON_Delete(json);
+    if (!ok) {
+        httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Config value too long");
+        return ESP_FAIL;
+    }
+    if (config_set_network(&network) != CFG_OK || config_manager_commit() != CFG_OK) {
+        httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Config save failed");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(request, "application/json");
+    httpd_resp_sendstr(request, "{\"ok\":true,\"reboot_required\":true}");
+    return ESP_OK;
+}
+
 static bool zic_json_float(const cJSON *json, const char *key, float *value, bool required)
 {
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(json, key);
@@ -402,6 +484,19 @@ static bool zic_ota_http_start(void)
         return false;
     }
 
+    const httpd_uri_t network_config_uri = {
+        .uri = "/config/network",
+        .method = HTTP_POST,
+        .handler = zic_network_config_http_handler,
+    };
+    err = httpd_register_uri_handler(s_ota_http_server, &network_config_uri);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Network config endpoint registration failed: %s", esp_err_to_name(err));
+        httpd_stop(s_ota_http_server);
+        s_ota_http_server = NULL;
+        return false;
+    }
+
     const httpd_uri_t weather_uri = {
         .uri = "/weather",
         .method = HTTP_POST,
@@ -415,7 +510,7 @@ static bool zic_ota_http_start(void)
         return false;
     }
 
-    ESP_LOGI(TAG, "HTTP services ready: POST /ota, GET /logs, POST /weather");
+    ESP_LOGI(TAG, "HTTP services ready: POST /ota, GET /logs, POST /config/network, POST /weather");
     return true;
 }
 
@@ -530,6 +625,11 @@ static bool zic_parse_u32_payload(const char *payload, size_t payload_len, uint3
 
     *value_out = (uint32_t)v;
     return true;
+}
+
+static bool zic_uri_uses_tls(const char *uri)
+{
+    return uri != NULL && strncmp(uri, "mqtts://", strlen("mqtts://")) == 0;
 }
 
 static cJSON *zic_parse_json_payload(const char *payload,
@@ -813,11 +913,24 @@ static void zic_runtime_init_context(zic_app_context_t *ctx)
     zic_v2_state_topic(ZIC_V2_DEVICE_ID, s_v2_state_topic, sizeof(s_v2_state_topic));
     zic_v2_outcome_topic(ZIC_V2_DEVICE_ID, s_v2_outcome_topic, sizeof(s_v2_outcome_topic));
 
+    config_network_t network_config = {0};
+    const bool has_network_config = config_get_network(&network_config) == CFG_OK;
+    const char *broker_uri = (has_network_config && network_config.mqtt_broker_uri[0] != '\0')
+        ? network_config.mqtt_broker_uri
+        : ZIC_DEFAULT_BROKER_URI;
+    const char *username = (has_network_config && network_config.mqtt_username[0] != '\0')
+        ? network_config.mqtt_username
+        : NULL;
+    const char *password = (has_network_config && network_config.mqtt_password[0] != '\0')
+        ? network_config.mqtt_password
+        : NULL;
+
     mqtt_transport_config_t mqtt_cfg = {
-        .broker_uri = ZIC_DEFAULT_BROKER_URI,
-        .client_id = ZIC_DEFAULT_CLIENT_ID,
-        .username = NULL,
-        .password = NULL,
+        .broker_uri = broker_uri,
+        .client_id = ZIC_V2_DEVICE_ID,
+        .username = username,
+        .password = password,
+        .use_crt_bundle = (has_network_config && network_config.mqtt_tls_enabled) || zic_uri_uses_tls(broker_uri),
         .subscribe_topics = s_command_topics,
         .subscribe_topic_count = sizeof(s_command_topics) / sizeof(s_command_topics[0]),
         .on_message = zic_mqtt_on_message,

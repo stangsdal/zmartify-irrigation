@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 
+#include "esp_crt_bundle.h"
 #include "esp_log.h"
 #include "mqtt_client.h"
 
@@ -58,6 +59,7 @@ bool mqtt_transport_init(mqtt_transport_t *transport, const mqtt_transport_confi
 
     const esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = config->broker_uri,
+        .broker.verification.crt_bundle_attach = config->use_crt_bundle ? esp_crt_bundle_attach : NULL,
         .credentials.client_id = config->client_id,
         .credentials.username = config->username,
         .credentials.authentication.password = config->password,
