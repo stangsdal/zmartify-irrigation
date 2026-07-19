@@ -67,6 +67,24 @@ bool hmi_7b_rgb_deinit(esp_lcd_panel_handle_t panel)
     return true;
 }
 
+bool hmi_7b_rgb_register_event_callbacks(esp_lcd_panel_handle_t panel,
+                                         const esp_lcd_rgb_panel_event_callbacks_t *callbacks,
+                                         void *user_ctx)
+{
+    if (panel == NULL || callbacks == NULL)
+    {
+        return false;
+    }
+
+    esp_err_t err = esp_lcd_rgb_panel_register_event_callbacks(panel, callbacks, user_ctx);
+    if (err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "rgb event callback registration failed: %d", err);
+        return false;
+    }
+    return true;
+}
+
 bool hmi_7b_rgb_init_with_flags(esp_lcd_panel_handle_t *out_panel, const hmi_7b_rgb_flags_t *flags)
 {
     if (out_panel == NULL)

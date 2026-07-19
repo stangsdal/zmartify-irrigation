@@ -11,6 +11,7 @@
 #include "lvgl.h"
 
 #include <inttypes.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -23,7 +24,7 @@ static const char *TAG = "hmi_lvgl";
 #define LVGL_TICK_MS                   2
 #define LVGL_TASK_MIN_DELAY_MS         2
 #define LVGL_TASK_MAX_DELAY_MS         16
-#define LVGL_DRAW_LINES                40
+#define LVGL_DIRECT_BUFFER_COUNT       2
 #define STATUS_UPDATE_PERIOD_MS         1000
 #define HMI_NAV_X                       24
 #define HMI_NAV_Y                       112
@@ -85,6 +86,18 @@ static char s_action_feedback[64] = "Ready";
 
 static lv_color_t *s_draw_buf_1 = NULL;
 static lv_color_t *s_draw_buf_2 = NULL;
+static bool s_vsync_registered = false;
+
+static void wait_for_vsync_if_available(void)
+{
+    if (!s_vsync_registered)
+    {
+        return;
+    }
+
+    (void)ulTaskNotifyValueClear(NULL, ULONG_MAX);
+    (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
+}
 
 static const char *const s_screen_titles[HMI_SCREEN_COUNT] = {
     "Dashboard",
@@ -973,17 +986,23 @@ static void create_home_screen(void)
 #if LVGL_VERSION_MAJOR >= 9
 static void lvgl_flush_cb(lv_display_t *display, const lv_area_t *area, uint8_t *color_map)
 {
-    (void)display;
-    esp_err_t err = esp_lcd_panel_draw_bitmap(
-        s_panel,
-        area->x1,
-        area->y1,
-        area->x2 + 1,
-        area->y2 + 1,
-        color_map);
-    if (err != ESP_OK)
+    if (lv_display_flush_is_last(display))
     {
-        ESP_LOGW(TAG, "draw_bitmap failed: %d", err);
+        esp_err_t err = esp_lcd_panel_draw_bitmap(
+            s_panel,
+            area->x1,
+            area->y1,
+            area->x2 + 1,
+            area->y2 + 1,
+            color_map);
+        if (err != ESP_OK)
+        {
+            ESP_LOGW(TAG, "draw_bitmap failed: %d", err);
+        }
+        else
+        {
+            wait_for_vsync_if_available();
+        }
     }
     s_flush_count++;
     lv_display_flush_ready(display);
@@ -1028,16 +1047,23 @@ static void lvgl_touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 #else
 static void lvgl_flush_cb(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_t *color_map)
 {
-    esp_err_t err = esp_lcd_panel_draw_bitmap(
-        s_panel,
-        area->x1,
-        area->y1,
-        area->x2 + 1,
-        area->y2 + 1,
-        color_map);
-    if (err != ESP_OK)
+    if (lv_disp_flush_is_last(disp_drv))
     {
-        ESP_LOGW(TAG, "draw_bitmap failed: %d", err);
+        esp_err_t err = esp_lcd_panel_draw_bitmap(
+            s_panel,
+            area->x1,
+            area->y1,
+            area->x2 + 1,
+            area->y2 + 1,
+            color_map);
+        if (err != ESP_OK)
+        {
+            ESP_LOGW(TAG, "draw_bitmap failed: %d", err);
+        }
+        else
+        {
+            wait_for_vsync_if_available();
+        }
     }
     s_flush_count++;
     lv_disp_flush_ready(disp_drv);
@@ -1084,6 +1110,24 @@ static void lvgl_touch_read_cb(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
 static bool init_rgb_panel(void)
 {
     return hmi_7b_rgb_init(&s_panel);
+}
+
+static bool rgb_vsync_cb(esp_lcd_panel_handle_t panel,
+                         const esp_lcd_rgb_panel_event_data_t *edata,
+                         void *user_ctx)
+{
+    (void)panel;
+    (void)edata;
+    (void)user_ctx;
+
+    if (s_lvgl_task == NULL)
+    {
+        return false;
+    }
+
+    BaseType_t need_yield = pdFALSE;
+    vTaskNotifyGiveFromISR(s_lvgl_task, &need_yield);
+    return need_yield == pdTRUE;
 }
 
 #if HMI_RGB_BYPASS_DIAG_MODE
@@ -1228,16 +1272,25 @@ static bool init_lvgl_core(void)
 {
     lv_init();
 
-    size_t draw_pixels = LCD_H_RES * LVGL_DRAW_LINES;
-    size_t draw_bytes = draw_pixels * sizeof(lv_color_t);
-
-    s_draw_buf_1 = heap_caps_malloc(draw_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    s_draw_buf_2 = heap_caps_malloc(draw_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (s_draw_buf_1 == NULL || s_draw_buf_2 == NULL)
+    esp_err_t fb_err = esp_lcd_rgb_panel_get_frame_buffer(
+        s_panel,
+        LVGL_DIRECT_BUFFER_COUNT,
+        (void **)&s_draw_buf_1,
+        (void **)&s_draw_buf_2);
+    if (fb_err != ESP_OK)
     {
-        ESP_LOGE(TAG, "LVGL draw buffers alloc failed (%u bytes each)", (unsigned)draw_bytes);
+        ESP_LOGE(TAG, "RGB framebuffer lookup failed: %d", fb_err);
         return false;
     }
+
+    size_t draw_pixels = LCD_H_RES * LCD_V_RES;
+    size_t draw_bytes = draw_pixels * sizeof(lv_color_t);
+    if (s_draw_buf_1 == NULL || s_draw_buf_2 == NULL)
+    {
+        ESP_LOGE(TAG, "RGB framebuffer lookup returned NULL");
+        return false;
+    }
+    ESP_LOGI(TAG, "LVGL direct RGB buffers ready (%u bytes each)", (unsigned)draw_bytes);
 
 #if LVGL_VERSION_MAJOR >= 9
     lv_display_t *display = lv_display_create(LCD_H_RES, LCD_V_RES);
@@ -1247,7 +1300,7 @@ static bool init_lvgl_core(void)
         return false;
     }
 
-    lv_display_set_buffers(display, s_draw_buf_1, s_draw_buf_2, draw_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_buffers(display, s_draw_buf_1, s_draw_buf_2, draw_bytes, LV_DISPLAY_RENDER_MODE_DIRECT);
     lv_display_set_flush_cb(display, lvgl_flush_cb);
 
     lv_indev_t *touch = lv_indev_create();
@@ -1268,6 +1321,7 @@ static bool init_lvgl_core(void)
     disp_drv.ver_res = LCD_V_RES;
     disp_drv.flush_cb = lvgl_flush_cb;
     disp_drv.draw_buf = &draw_buf;
+    disp_drv.direct_mode = 1;
     (void)lv_disp_drv_register(&disp_drv);
 
     static lv_indev_drv_t indev_drv;
@@ -1358,6 +1412,18 @@ bool hmi_lvgl_port_init(void)
     if (!init_rgb_panel())
     {
         return false;
+    }
+
+    esp_lcd_rgb_panel_event_callbacks_t rgb_callbacks = {
+        .on_vsync = rgb_vsync_cb,
+    };
+    if (!hmi_7b_rgb_register_event_callbacks(s_panel, &rgb_callbacks, NULL))
+    {
+        ESP_LOGW(TAG, "RGB VSYNC callback unavailable; display may tear during large redraws");
+    }
+    else
+    {
+        s_vsync_registered = true;
     }
 
     if (!lvgl_lock(pdMS_TO_TICKS(100)))
