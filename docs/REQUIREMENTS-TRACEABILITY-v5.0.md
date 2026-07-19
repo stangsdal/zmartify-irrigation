@@ -2,7 +2,7 @@
 
 **Project:** Zmartify Irrigation Controller
 **Baseline:** Master Engineering Package (MEP) v5.0 plus active WaterSensor v5.1 addendum
-**RTM version:** 1.1
+**RTM version:** 1.2
 **Created:** 2026-07-19
 **Owner:** Firmware and system engineering
 **Plan:** [Implementation Plan 2](IMPLEMENTATION-PLAN-2.md), Step 1
@@ -134,7 +134,7 @@ evidence is linked. Firmware support is noted but does not prove electrical comp
 | HW-003 | Physical/electrical separation of mains, 24 VAC, logic and sensors | `Not Verified` | Requires cabinet/electrical inspection | 10 |
 | HW-004 | Field-replaceable modules | `Not Verified` | Requires mechanical inspection/FAT | 10 |
 | HW-CPU-001 | Waveshare ESP32-S3 7-inch 1024x600 controller | `Not Verified` | Firmware targets ESP32-S3 and 1024x600; approved BOM inspection absent | 10 |
-| HW-CPU-002 | ESP32 owns control, HMI, MQTT, OTA, sensors, events, logs, weather | `Partial` | Runtime performs these roles; some diagnostics/HMI scope incomplete | 6 |
+| HW-CPU-002 | ESP32 owns control, HMI, MQTT, OTA, sensors, events, logs, weather | `Partial` | Runtime performs these roles with integrated diagnostics; HMI scope remains incomplete | 9 |
 | HW-IO-001 | MCP23017 provides 16 I2C outputs | `Implemented` | HAL and relay manager integrated; live relay mapping previously exercised | 10 |
 | HW-IO-002 | Relay 0 master, relay 1-15 zones | `Implemented` | Mapping constants and controlled relay test | 10 |
 | HW-IO-003 | MCP23017 interrupts available for future revisions | `Not Verified` | PCB/pin availability inspection absent | 10 |
@@ -166,7 +166,7 @@ evidence is linked. Firmware support is noted but does not prove electrical comp
 | SAF-003 | Protect irrigation equipment under abnormal operation | `Partial` | Runtime limits and pressure/flow alarms; electrical/power monitoring incomplete | 5 |
 | SAF-004 | Protect users through mains/SELV separation | `Not Verified` | Requires electrical inspection and FAT | 10 |
 | SAF-005 | Preserve complete history after safety incidents | `Partial` | CRC alarm/event persistence; schema/capacity do not prove complete incident history | 6 |
-| SAF-006 | Permit rapid diagnosis and recovery | `Partial` | Logs and basic HMI exist; integrated diagnostics/service workflow incomplete | 6 |
+| SAF-006 | Permit rapid diagnosis and recovery | `Partial` | Live bounded health and logs are available over HTTP/MQTT; authenticated service workflow and complete HMI remain open | 2, 9 |
 
 ## 8. Firmware Architecture Requirements
 
@@ -222,7 +222,7 @@ destination. Each source ID is written explicitly to permit machine coverage che
 | Volume 1, Chapter 9 hydraulic | SYS-HYD-001, SYS-HYD-002, SYS-HYD-003, SYS-HYD-004, SYS-HYD-005 | `Partial` | Flow/pressure supervision exists; learning, calibration and physical fault evidence incomplete | 4, 5, 10 |
 | Volume 1, Chapter 9 weather | SYS-WEA-001, SYS-WEA-002, SYS-WEA-003 | `Partial` | Weather cache and ET policy exist; provider and site verification incomplete | 7, 10 |
 | Volume 1, Chapter 9 MQTT | SYS-MQTT-001, SYS-MQTT-002, SYS-MQTT-003, SYS-MQTT-004, SYS-MQTT-005 | `Partial` | Live transport/subscriptions exist; schema, QoS, duplicate and recovery contract tests incomplete | 7 |
-| Volume 1, Chapter 9 storage | SYS-STO-001, SYS-STO-002 | `Partial` | CRC event/weather persistence exists; complete retention/capacity requirements not proven | 6, 10 |
+| Volume 1, Chapter 9 storage | SYS-STO-001, SYS-STO-002 | `Partial` | CRC event/weather persistence and live write-health reporting exist; complete retention/capacity requirements not proven | 8, 10 |
 | Volume 2, Chapter 4 HAL | HAL-001, HAL-002, HAL-003, HAL-004, HAL-005, HAL-006 | `Partial` | HAL boundaries exist for active hardware; API and hardware-verification breadth incomplete | 5, 10 |
 | Volume 2, Chapter 7 relay architecture | REL-001, REL-002, REL-003, REL-004, REL-005, REL-006 | `Partial` | Exclusive relay ownership/interlocks and hydraulic response diagnostics exist; installed hardware has no contact/current feedback | 5 |
 | Volume 2, Chapter 13 MQTT architecture | MQTT-001, MQTT-002, MQTT-003, MQTT-004 | `Partial` | MQTT transport and v2 message subset exist; full architectural contract is open | 7 |
@@ -232,7 +232,7 @@ destination. Each source ID is written explicitly to permit machine coverage che
 | Volume 4, Chapter 1 HMI principles | HMI-001, HMI-002, HMI-003, HMI-004, HMI-005 | `Partial` | Operational LVGL UI exists; full service/safety/usability evidence incomplete | 9 |
 | Volume 4, Chapter 3 UX/navigation | UX-001, UX-002, UX-003, UX-004 | `Partial` | Multi-screen navigation exists; hierarchy and workflow acceptance are not measured | 9 |
 | Volume 4, Chapter 8 configuration UI | CFG-001, CFG-002, CFG-003, CFG-004 | `Partial` | Configuration model exists; protected complete local administration workflow is incomplete | 2, 9 |
-| Volume 4, Chapter 9 diagnostics UI | DIA-001, DIA-002, DIA-003, DIA-004 | `Partial` | Basic status screens/logs exist; authoritative diagnostics and service workflow are incomplete | 6, 9 |
+| Volume 4, Chapter 9 diagnostics UI | DIA-001, DIA-002, DIA-003, DIA-004 | `Partial` | Authoritative runtime diagnostics and logs exist; complete HMI service workflow remains open | 9 |
 | Volume 4, Chapter 11 themes | THM-001, THM-002, THM-003, THM-004 | `Missing` | No theme engine or responsive theme verification | 9 |
 | Volume 4, Chapter 12 input | INP-001, INP-002, INP-003, INP-004 | `Partial` | GT911 touch works; gesture/filter/focus/input abstraction coverage incomplete | 9 |
 | Volume 4, Chapter 13 languages | LNG-001, LNG-002, LNG-003, LNG-004, LNG-005 | `Missing` | Display strings are hardcoded; no translation catalogue/runtime selection | 9 |
@@ -246,7 +246,7 @@ through the following stable chapter-level keys until the source documents assig
 
 | Tracking key | Normative domain | Applicability/status | Current evidence or gap | Plan step |
 |---|---|---|---|---|
-| MEP-V1-C5-ARCH | Layering, fail-safe architecture and subsystem ownership | `Partial` | Components exist; ownership drift remains in main/MQTT/diagnostics | 6, 7 |
+| MEP-V1-C5-ARCH | Layering, fail-safe architecture and subsystem ownership | `Partial` | Diagnostics owns health policy; remaining ownership drift is concentrated in main/MQTT | 7 |
 | MEP-V1-C7-SW | ESP-IDF, coding, task, storage and software baseline | `Partial` | Build and modules exist; several architecture promises incomplete | 6, 8 |
 | MEP-V1-C8-CONOPS | Auto/manual/service/fault operation and recovery | `Partial` | Auto/manual/fault paths exist; service mode incomplete | 9 |
 | MEP-V1-C9-PERF | Availability, timing, storage, sensor, network and reliability targets | `Not Verified` | No consolidated performance/endurance evidence | 10 |
@@ -263,9 +263,9 @@ through the following stable chapter-level keys until the source documents assig
 | MEP-V2-C12-ALARM | Full alarm model, lifecycle, actions and history | `Partial` | Severity/active state exists; acknowledge/resolve lifecycle missing | 8 |
 | MEP-V2-C13-MQTT | TLS, topics, QoS, validation, reconnect and discovery | `Partial` | TLS transport/commands exist; full contract tests and discovery incomplete | 7 |
 | MEP-V2-C14-CONFIG | Versioned schema, validation, migration and audit events | `Partial` | CRC/version/config exists; migration resets instead of converting | 4, 8 |
-| MEP-V2-C15-STORAGE | Typed persistent data, retention, integrity and diagnostics | `Partial` | Event/weather persistence exists; full data model/backups incomplete | 6, 8 |
+| MEP-V2-C15-STORAGE | Typed persistent data, retention, integrity and diagnostics | `Partial` | Event/weather persistence and write-health diagnostics exist; full data model/backups incomplete | 8 |
 | MEP-V2-C16-OTA | Trusted download, validation, health confirmation and rollback | `Partial` | RSA-signed updates, HTTPS remote policy, live health confirmation, rollback guard and persistent audit integrated | Physical rollback, interruption and production-key FAT pending | 3, 10 |
-| MEP-V2-C17-DIAG | Authoritative system health, task/resource/event/sensor metrics | `Partial` | Component exists but is not initialized from main and uses legacy/null state | 6 |
+| MEP-V2-C17-DIAG | Authoritative system health, task/resource/event/sensor metrics | `Implemented` | Live managers feed tested health policy; bounded HTTP/MQTT snapshot and OTA gate expose heap, task, event, alarm, sensor, communication and storage state | [Diagnostics policy tests](../test/test_diagnostics_policy.c); signed ESP32-S3 OTA and live `/health` metrics verified 2026-07-19 | - |
 | MEP-V2-C19-SEC | Authentication, authorization, TLS, secure boot and flash encryption | `Missing` | MQTT TLS exists; HTTP auth, secure boot and flash encryption absent | 2, 3 |
 | MEP-V3-MQTT-API | Namespace, schemas, transaction outcomes, QoS and integrations | `Partial` | v2 subset exists; compliance matrix and broker tests absent | 7 |
 | MEP-V3-C18-SEC | MQTT/API authentication, authorization and hardening | `Partial` | Credentials/TLS available; role enforcement/replay protection incomplete | 2, 7 |

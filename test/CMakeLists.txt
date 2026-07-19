@@ -33,6 +33,12 @@ zic_add_host_test(test_valve_diagnostics
 target_include_directories(test_valve_diagnostics PRIVATE
     ../components/valve_diagnostics/include)
 
+zic_add_host_test(test_diagnostics_policy
+    test_diagnostics_policy.c
+    ../components/diagnostics_manager/src/diagnostics_policy.c)
+target_include_directories(test_diagnostics_policy PRIVATE
+    ../components/diagnostics_manager/include)
+
 zic_add_host_test(test_irrigation_engine
     test_irrigation_engine.c
     ../components/irrigation_engine/src/irrigation_engine.c

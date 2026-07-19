@@ -21,8 +21,6 @@ static const char *TAG = "diag_mgr";
 
 #define OTA_CONFIRM_DELAY_MS  30000u  /**< Wait this long before marking OTA valid */
 #define OTA_GUARD_TASK_STACK  16384u  /**< Includes RSA verification of rollback candidate */
-#define HEAP_CRITICAL_PCT     90u     /**< Heap utilisation above this = unhealthy  */
-
 static bool s_initialized = false;
 static diagnostics_manager_config_t s_config;
 
@@ -159,15 +157,6 @@ bool diagnostics_get_health(diag_health_t *out)
         out->heap_utilisation_pct = (uint8_t)((used * 100u) / out->heap_total_bytes);
     }
 
-    if (!s_config.snapshot(s_config.context,
-                           &out->active_alarms,
-                           &out->critical_alarms,
-                           &out->log_entries,
-                           &out->subsystems_ready))
-    {
-        return false;
-    }
-
     /* Event bus */
     event_bus_stats_t stats;
     if (event_bus_get_stats(&stats))
@@ -175,6 +164,27 @@ bool diagnostics_get_health(diag_health_t *out)
         out->events_processed = stats.events_processed;
         out->events_dropped   = stats.events_dropped;
     }
+
+    diag_policy_input_t policy_input = {
+        .heap_utilisation_pct = out->heap_utilisation_pct,
+        .event_drops = out->events_dropped,
+    };
+    if (!s_config.snapshot(s_config.context, &policy_input,
+                           &out->active_alarms, &out->log_entries))
+    {
+        return false;
+    }
+    out->critical_alarms = policy_input.critical_alarms;
+    out->flow_sensor_available = policy_input.flow_sensor_available;
+    out->pressure_sensor_available = policy_input.pressure_sensor_available;
+    out->mqtt_connected = policy_input.mqtt_connected;
+    out->time_synchronized = policy_input.time_synchronized;
+    out->storage_ready = policy_input.storage_ready;
+    out->storage_last_write_ok = policy_input.storage_last_write_ok;
+    out->control_stack_free_bytes = policy_input.control_stack_free_bytes;
+    out->telemetry_stack_free_bytes = policy_input.telemetry_stack_free_bytes;
+    out->watersensor_stack_free_bytes = policy_input.watersensor_stack_free_bytes;
+    out->status = diagnostics_policy_evaluate(&policy_input);
 
     /* Misc */
     out->reset_reason    = (uint8_t)esp_reset_reason();
@@ -206,7 +216,19 @@ size_t diagnostics_health_to_json(char *buf, size_t len)
              "\"events_dropped\":%lu,"
              "\"reset_reason\":%u,"
              "\"log_entries\":%lu,"
-             "\"healthy\":%s"
+             "\"overall\":\"%s\","
+             "\"runtime\":\"%s\","
+             "\"hydraulics\":\"%s\","
+             "\"communications\":\"%s\","
+             "\"storage\":\"%s\","
+             "\"flow_available\":%s,"
+             "\"pressure_available\":%s,"
+             "\"mqtt_connected\":%s,"
+             "\"time_synchronized\":%s,"
+             "\"control_stack_free\":%lu,"
+             "\"telemetry_stack_free\":%lu,"
+             "\"watersensor_stack_free\":%lu,"
+             "\"ota_acceptable\":%s"
              "}",
              (unsigned long)h.uptime_s,
              (unsigned long)h.heap_free_bytes,
@@ -218,10 +240,21 @@ size_t diagnostics_health_to_json(char *buf, size_t len)
              (unsigned long)h.events_dropped,
              (unsigned)h.reset_reason,
              (unsigned long)h.log_entries,
-             h.subsystems_ready && h.heap_utilisation_pct < HEAP_CRITICAL_PCT
-                ? "true" : "false");
+                 diagnostics_status_name(h.status.overall),
+                 diagnostics_status_name(h.status.runtime),
+                 diagnostics_status_name(h.status.hydraulics),
+                 diagnostics_status_name(h.status.communications),
+                 diagnostics_status_name(h.status.storage),
+                 h.flow_sensor_available ? "true" : "false",
+                 h.pressure_sensor_available ? "true" : "false",
+                 h.mqtt_connected ? "true" : "false",
+                 h.time_synchronized ? "true" : "false",
+                 (unsigned long)h.control_stack_free_bytes,
+                 (unsigned long)h.telemetry_stack_free_bytes,
+                 (unsigned long)h.watersensor_stack_free_bytes,
+                 h.status.ota_acceptable ? "true" : "false");
 
-    return (r > 0 && (size_t)r < len) ? (size_t)r : len - 1;
+    return (r > 0 && (size_t)r < len) ? (size_t)r : 0u;
 }
 
 bool diagnostics_is_healthy(void)
@@ -231,7 +264,5 @@ bool diagnostics_is_healthy(void)
     {
         return false;
     }
-    return h.critical_alarms == 0
-        && h.heap_utilisation_pct < HEAP_CRITICAL_PCT
-        && h.subsystems_ready;
+    return h.status.ota_acceptable;
 }

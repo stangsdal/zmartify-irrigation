@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "src/diagnostics_manager.c"
+    SRCS "src/diagnostics_manager.c" "src/diagnostics_policy.c"
     INCLUDE_DIRS "include"
     REQUIRES
         freertos

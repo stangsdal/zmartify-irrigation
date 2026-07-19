@@ -21,6 +21,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include "diagnostics_policy.h"
+
 /* ─── Health snapshot ─────────────────────────────────────────────────── */
 
 typedef struct
@@ -36,14 +38,22 @@ typedef struct
     uint32_t events_dropped;      /**< Event bus dropped count             */
     uint8_t  reset_reason;        /**< esp_reset_reason_t cast to uint8    */
     uint32_t log_entries;         /**< Current event log entry count       */
-    bool     subsystems_ready;    /**< All core subsystems reported healthy */
+    bool     flow_sensor_available;
+    bool     pressure_sensor_available;
+    bool     mqtt_connected;
+    bool     time_synchronized;
+    bool     storage_ready;
+    bool     storage_last_write_ok;
+    uint32_t control_stack_free_bytes;
+    uint32_t telemetry_stack_free_bytes;
+    uint32_t watersensor_stack_free_bytes;
+    diag_policy_result_t status;
 } diag_health_t;
 
 typedef bool (*diagnostics_snapshot_fn)(void *context,
+                                        diag_policy_input_t *policy_input,
                                         uint8_t *active_alarms,
-                                        uint8_t *critical_alarms,
-                                        uint32_t *log_entries,
-                                        bool *subsystems_ready);
+                                        uint32_t *log_entries);
 typedef void (*diagnostics_action_fn)(void *context);
 typedef void (*diagnostics_audit_fn)(void *context, const char *message);
 
@@ -77,7 +87,7 @@ bool diagnostics_get_health(diag_health_t *out);
  * @brief Render health snapshot as JSON into caller-supplied buffer.
  *
  * @param buf     Output buffer
- * @param len     Buffer size (minimum 256 bytes recommended)
+ * @param len     Buffer size (minimum 768 bytes recommended)
  * @return Bytes written (excluding null terminator)
  */
 size_t diagnostics_health_to_json(char *buf, size_t len);

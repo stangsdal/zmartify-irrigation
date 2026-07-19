@@ -114,6 +114,8 @@ typedef struct {
     pressure_supervision_config_t pressure_supervision;
     config_hydraulic_t hydraulic_config;
     bool pressure_available;
+    bool storage_ready;
+    bool storage_last_write_ok;
     bool safety_fault_latched;
     uint32_t last_log_maintenance_timestamp;
     uint32_t last_weather_calculation_timestamp;
@@ -125,6 +127,9 @@ static EventGroupHandle_t s_runtime_events;
 static SemaphoreHandle_t s_ctx_lock;
 static SemaphoreHandle_t s_watersensor_lock;
 static watersensor_client_t s_watersensor;
+static TaskHandle_t s_control_task_handle;
+static TaskHandle_t s_telemetry_task_handle;
+static TaskHandle_t s_watersensor_task_handle;
 
 static const char *s_command_topics[] = {
     ZIC_MQTT_ROOT "/command/start_zone",
@@ -138,6 +143,7 @@ static const char *s_command_topics[] = {
 
 static char s_v2_state_topic[128];
 static char s_v2_outcome_topic[128];
+static char s_diagnostics_topic[128];
 static char s_v2_last_command_id[40];
 static httpd_handle_t s_ota_http_server;
 
@@ -161,37 +167,55 @@ static void zic_ota_audit(void *context, const char *message)
 }
 
 static bool zic_diagnostics_snapshot(void *context,
+                                     diag_policy_input_t *policy_input,
                                      uint8_t *active_alarms,
-                                     uint8_t *critical_alarms,
-                                     uint32_t *log_entries,
-                                     bool *subsystems_ready)
+                                     uint32_t *log_entries)
 {
     zic_app_context_t *ctx = context;
-    if (ctx == NULL || active_alarms == NULL || critical_alarms == NULL ||
-        log_entries == NULL || subsystems_ready == NULL || s_ctx_lock == NULL ||
+    if (ctx == NULL || policy_input == NULL || active_alarms == NULL ||
+        log_entries == NULL || s_ctx_lock == NULL ||
         xSemaphoreTake(s_ctx_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
         return false;
     }
 
     *active_alarms = 0;
-    *critical_alarms = 0;
+    policy_input->critical_alarms = 0;
     for (size_t index = 0; index < ZIC_MAX_ACTIVE_ALARMS; ++index) {
         const zic_alarm_t *alarm = &ctx->alarm_manager.alarms[index];
         if (alarm->active) {
             ++*active_alarms;
             if (alarm->severity == ZIC_ALARM_CRITICAL) {
-                ++*critical_alarms;
+                ++policy_input->critical_alarms;
             }
         }
     }
     *log_entries = (uint32_t)storage_manager_count(&ctx->storage_manager);
     EventBits_t runtime_bits = xEventGroupGetBits(s_runtime_events);
-    *subsystems_ready = (runtime_bits & ZIC_EVENT_ENGINE_READY) != 0 &&
+    policy_input->core_ready = (runtime_bits & ZIC_EVENT_ENGINE_READY) != 0 &&
         (runtime_bits & ZIC_EVENT_FAULT) == 0;
+    policy_input->pressure_sensor_available = ctx->pressure_available;
+    policy_input->mqtt_connected = mqtt_transport_is_connected(&ctx->mqtt_transport);
+    policy_input->time_synchronized = hal_time_is_synced();
+    policy_input->storage_ready = ctx->storage_ready;
+    policy_input->storage_last_write_ok = ctx->storage_last_write_ok;
+    policy_input->control_stack_free_bytes = s_control_task_handle != NULL
+        ? uxTaskGetStackHighWaterMark(s_control_task_handle) * sizeof(StackType_t) : 0u;
+    policy_input->telemetry_stack_free_bytes = s_telemetry_task_handle != NULL
+        ? uxTaskGetStackHighWaterMark(s_telemetry_task_handle) * sizeof(StackType_t) : 0u;
+    policy_input->watersensor_stack_free_bytes = s_watersensor_task_handle != NULL
+        ? uxTaskGetStackHighWaterMark(s_watersensor_task_handle) * sizeof(StackType_t) : 0u;
 #if ZIC_OTA_FORCE_HEALTH_FAILURE
-    *subsystems_ready = false;
+    policy_input->core_ready = false;
 #endif
     xSemaphoreGive(s_ctx_lock);
+
+    policy_input->flow_sensor_available = false;
+    if (s_watersensor_lock != NULL &&
+        xSemaphoreTake(s_watersensor_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+        policy_input->flow_sensor_available =
+            watersensor_client_get_state(&s_watersensor) == WATERSENSOR_LINK_ONLINE;
+        xSemaphoreGive(s_watersensor_lock);
+    }
     return true;
 }
 
@@ -224,8 +248,12 @@ static bool zic_log_load(void *context, void *data, size_t *length)
 
 static bool zic_log_save(void *context, const void *data, size_t length)
 {
-    (void)context;
-    return hal_storage_write_blob("event_log", data, length) == HAL_OK;
+    zic_app_context_t *ctx = context;
+    bool ok = hal_storage_write_blob("event_log", data, length) == HAL_OK;
+    if (ctx != NULL) {
+        ctx->storage_last_write_ok = ok;
+    }
+    return ok;
 }
 
 static bool zic_weather_load(void *context, void *data, size_t *length)
@@ -418,6 +446,19 @@ static esp_err_t zic_logs_http_handler(httpd_req_t *request)
     }
     xSemaphoreGive(s_ctx_lock);
     return result;
+}
+
+static esp_err_t zic_health_http_handler(httpd_req_t *request)
+{
+    char payload[768];
+    size_t length = diagnostics_health_to_json(payload, sizeof(payload));
+    if (length == 0u) {
+        httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Diagnostics unavailable");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(request, "application/json");
+    return httpd_resp_send(request, payload, length);
 }
 
 static bool zic_json_copy_string(const cJSON *root, const char *key, char *out, size_t out_len)
@@ -614,6 +655,19 @@ static bool zic_ota_http_start(void)
         return false;
     }
 
+    const httpd_uri_t health_uri = {
+        .uri = "/health",
+        .method = HTTP_GET,
+        .handler = zic_health_http_handler,
+    };
+    err = httpd_register_uri_handler(s_ota_http_server, &health_uri);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Health endpoint registration failed: %s", esp_err_to_name(err));
+        httpd_stop(s_ota_http_server);
+        s_ota_http_server = NULL;
+        return false;
+    }
+
     const httpd_uri_t network_config_uri = {
         .uri = "/config/network",
         .method = HTTP_POST,
@@ -640,7 +694,7 @@ static bool zic_ota_http_start(void)
         return false;
     }
 
-    ESP_LOGI(TAG, "HTTP services ready: POST /ota, GET /logs, POST /config/network, POST /weather");
+    ESP_LOGI(TAG, "HTTP services ready: POST /ota, GET /logs, GET /health, POST /config/network, POST /weather");
     return true;
 }
 
@@ -1030,8 +1084,10 @@ static void zic_runtime_init_context(zic_app_context_t *ctx)
         .minimum_pressure_mbar = alarm_config.pressure_low_mbar,
     };
     (void)valve_diagnostics_init(&ctx->valve_diagnostics, &valve_diag_config);
-    storage_manager_init(&ctx->storage_manager, s_log_buffer, ZIC_LOG_PERSIST_CAPACITY);
-    storage_manager_set_persistence(&ctx->storage_manager, zic_log_load, zic_log_save, NULL);
+    ctx->storage_ready = storage_manager_init(&ctx->storage_manager, s_log_buffer,
+                                              ZIC_LOG_PERSIST_CAPACITY);
+    ctx->storage_last_write_ok = ctx->storage_ready;
+    storage_manager_set_persistence(&ctx->storage_manager, zic_log_load, zic_log_save, ctx);
     if (!storage_manager_restore(&ctx->storage_manager)) {
         ESP_LOGI(TAG, "No valid persisted event log found");
     }
@@ -1046,6 +1102,8 @@ static void zic_runtime_init_context(zic_app_context_t *ctx)
     zic_mqtt_topic_build("state", ctx->state_topic, sizeof(ctx->state_topic));
     zic_v2_state_topic(ZIC_V2_DEVICE_ID, s_v2_state_topic, sizeof(s_v2_state_topic));
     zic_v2_outcome_topic(ZIC_V2_DEVICE_ID, s_v2_outcome_topic, sizeof(s_v2_outcome_topic));
+    snprintf(s_diagnostics_topic, sizeof(s_diagnostics_topic),
+             "zmartify/v2/devices/%s/diagnostics/health", ZIC_V2_DEVICE_ID);
 
     config_network_t network_config = {0};
     const bool has_network_config = config_get_network(&network_config) == CFG_OK;
@@ -1627,8 +1685,21 @@ static void zic_telemetry_task(void *arg)
                                        ZIC_MQTT_QOS_TELEMETRY,
                                        false);
             }
+
         }
         xSemaphoreGive(s_ctx_lock);
+
+        char diagnostics_payload[768];
+        size_t diagnostics_length = diagnostics_health_to_json(
+            diagnostics_payload, sizeof(diagnostics_payload));
+        if (diagnostics_length > 0u &&
+            mqtt_transport_is_connected(&s_ctx.mqtt_transport)) {
+            mqtt_transport_publish(&s_ctx.mqtt_transport,
+                                   s_diagnostics_topic,
+                                   diagnostics_payload,
+                                   1,
+                                   true);
+        }
 
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
@@ -1760,15 +1831,17 @@ void app_main(void)
         ESP_LOGW(TAG, "Water Sensor client unavailable; flow fallback remains active");
     } else {
         xTaskCreate(zic_watersensor_task, "watersensor", ZIC_WATERSENSOR_TASK_STACK,
-                    NULL, ZIC_WATERSENSOR_TASK_PRIO, NULL);
+                NULL, ZIC_WATERSENSOR_TASK_PRIO, &s_watersensor_task_handle);
     }
 
     xSemaphoreTake(s_ctx_lock, portMAX_DELAY);
     zic_runtime_init_context(&s_ctx);
     xSemaphoreGive(s_ctx_lock);
 
-    xTaskCreate(zic_control_task, "zic_ctrl", ZIC_CTRL_TASK_STACK, NULL, ZIC_CTRL_TASK_PRIO, NULL);
-    xTaskCreate(zic_telemetry_task, "zic_telem", ZIC_TELEM_TASK_STACK, NULL, ZIC_TELEM_TASK_PRIO, NULL);
+    xTaskCreate(zic_control_task, "zic_ctrl", ZIC_CTRL_TASK_STACK, NULL,
+                ZIC_CTRL_TASK_PRIO, &s_control_task_handle);
+    xTaskCreate(zic_telemetry_task, "zic_telem", ZIC_TELEM_TASK_STACK, NULL,
+                ZIC_TELEM_TASK_PRIO, &s_telemetry_task_handle);
 
     const diagnostics_manager_config_t diagnostics_config = {
         .snapshot = zic_diagnostics_snapshot,

@@ -304,6 +304,35 @@ test was not run against connected valves during this step.
 - Diagnostics collection does not materially affect irrigation timing.
 - Host tests validate health aggregation; device tests validate heap and task metrics.
 
+**Implementation and verification (2026-07-19):**
+
+- Diagnostics Manager now collects from the active alarm, storage, event, MQTT, time, pressure
+  and WaterSensor instances through an injected snapshot. It reports uptime, reset reason, current
+  and minimum heap, event counts, active/critical alarms, persistent-log count, sensor and
+  communication availability, and byte-valued stack high-water marks for the control, telemetry
+  and WaterSensor tasks.
+- A platform-independent aggregation policy classifies runtime, hydraulics, communications and
+  storage as `healthy`, `degraded`, `unavailable` or `critical`. Overall display status remains
+  distinct from OTA acceptability: unavailable optional sensors or communications degrade the
+  report but do not roll back an otherwise safe image; core, heap, stack, critical-alarm and
+  storage failures reject OTA confirmation.
+- The same bounded JSON snapshot is served read-only at `GET /health` and retained on
+  `zmartify/v2/devices/<device-id>/diagnostics/health` at QoS 1. JSON rendering fails closed when
+  the caller's buffer is too small. The endpoint is temporarily unauthenticated because Step 2
+  has not yet introduced the shared HTTP authentication/authorization layer; it must be protected
+  by that layer before production release.
+- Diagnostics has no relay, valve or irrigation-control authority. Collection uses bounded mutex
+  waits and runs from the lower-priority telemetry/HTTP paths; the 30-second OTA guard consumes
+  only the policy's `ota_acceptable` result.
+- All 12 host tests pass, including health-state aggregation, optional-subsystem loss, critical
+  alarms, storage failures, low stack margin and event drops. The signed ESP-IDF image builds at
+  `0x151000` bytes with 21 percent app-partition headroom.
+- The signed image was OTA-deployed to the ESP32-S3 at `192.168.10.113`. After the confirmation
+  window, `/health` reported 39 percent heap utilization, 4,300/1,764/2,332 free stack bytes for
+  control/telemetry/WaterSensor, zero dropped events, healthy runtime and storage, synchronized
+  time, disconnected MQTT, unavailable flow/pressure, and `ota_acceptable:true`. The audit log
+  recorded `ota image confirmed valid`; no valves were activated.
+
 **Commit:** `Plan 2 Step 6: Integrate authoritative system diagnostics`
 
 ---
@@ -436,7 +465,7 @@ For each step:
 | 3. OTA trust and rollback | Signed OTA and automatic rollback hardware-verified; power-interruption FAT pending | `Plan 2 Step 3: Enforce trusted OTA and rollback` |
 | 4. Hydraulic safety configuration | Firmware complete; installed hydraulic commissioning pending | `Plan 2 Step 4: Externalize hydraulic safety configuration` |
 | 5. Relay and valve diagnostics | Firmware complete; hydraulic fault injection pending | `Plan 2 Step 5: Add relay and valve diagnostics` |
-| 6. Integrated diagnostics | Not started | - |
+| 6. Integrated diagnostics | Firmware and device metrics complete; HTTP authentication pending Step 2 | `Plan 2 Step 6: Integrate authoritative system diagnostics` |
 | 7. MQTT compliance | Not started | - |
 | 8. Config migration and alarm lifecycle | Not started | - |
 | 9. HMI completion | Not started | - |
