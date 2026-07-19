@@ -20,6 +20,7 @@
 static const char *TAG = "diag_mgr";
 
 #define OTA_CONFIRM_DELAY_MS  30000u  /**< Wait this long before marking OTA valid */
+#define OTA_GUARD_TASK_STACK  16384u  /**< Includes RSA verification of rollback candidate */
 #define HEAP_CRITICAL_PCT     90u     /**< Heap utilisation above this = unhealthy  */
 
 static bool s_initialized = false;
@@ -84,20 +85,26 @@ static void ota_health_check_task(void *arg)
     }
     else
     {
+        (void)ota_manager_transition(OTA_STATE_ROLLING_BACK);
+        esp_err_t rollback_err = esp_ota_mark_app_invalid_rollback();
+        if (rollback_err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "OTA rollback failed: %s", esp_err_to_name(rollback_err));
+            (void)ota_manager_transition(OTA_STATE_FAILED);
+            vTaskDelete(NULL);
+            return;
+        }
         if (s_config.raise_critical_alarm != NULL)
         {
             s_config.raise_critical_alarm(s_config.context);
         }
-        (void)ota_manager_transition(OTA_STATE_ROLLING_BACK);
         if (s_config.audit != NULL)
         {
             s_config.audit(s_config.context, "ota health failed; rollback requested");
         }
         (void)event_bus_publish(EVENT_OTA_ROLLBACK, 0, EVENT_PRIORITY_CRITICAL, 0, NULL, 0);
         ESP_LOGE(TAG, "Health check failed; triggering OTA rollback");
-        esp_err_t err = esp_ota_mark_app_invalid_rollback_and_reboot();
-        ESP_LOGE(TAG, "OTA rollback failed: %s", esp_err_to_name(err));
-        (void)ota_manager_transition(OTA_STATE_FAILED);
+        esp_restart();
     }
 
     vTaskDelete(NULL);
@@ -118,7 +125,8 @@ bool diagnostics_manager_init(const diagnostics_manager_config_t *config)
     }
 
     s_config = *config;
-    if (xTaskCreate(ota_health_check_task, "ota_guard", 3072, NULL, 1, NULL) != pdPASS)
+    if (xTaskCreate(ota_health_check_task, "ota_guard", OTA_GUARD_TASK_STACK,
+                    NULL, 1, NULL) != pdPASS)
     {
         memset(&s_config, 0, sizeof(s_config));
         return false;

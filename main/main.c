@@ -59,6 +59,7 @@ static zic_log_entry_t s_log_buffer[ZIC_LOG_PERSIST_CAPACITY];
 #define ZIC_CTRL_TASK_STACK 6144
 #define ZIC_TELEM_TASK_STACK 4096
 #define ZIC_WATERSENSOR_TASK_STACK 4096
+#define ZIC_OTA_TASK_STACK 16384
 #define ZIC_CTRL_TASK_PRIO 8
 #define ZIC_TELEM_TASK_PRIO 5
 #define ZIC_WATERSENSOR_TASK_PRIO 9
@@ -304,7 +305,7 @@ static esp_err_t zic_ota_http_handler(httpd_req_t *request)
         return ESP_FAIL;
     }
 
-    char buffer[4096];
+    char buffer[2048];
     int remaining = request->content_len;
     while (remaining > 0) {
         int received = httpd_req_recv(request, buffer,
@@ -578,7 +579,7 @@ static bool zic_ota_http_start(void)
     }
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.stack_size = 8192;
+    config.stack_size = ZIC_OTA_TASK_STACK;
     esp_err_t err = httpd_start(&s_ota_http_server, &config);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Direct OTA HTTP server failed: %s", esp_err_to_name(err));
@@ -1188,7 +1189,8 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
             break;
         }
         strcpy(firmware_url, cmd->ota_url);
-        if (xTaskCreate(zic_remote_ota_task, "ota_remote", 8192, firmware_url, 4, NULL) != pdPASS) {
+        if (xTaskCreate(zic_remote_ota_task, "ota_remote", ZIC_OTA_TASK_STACK,
+                firmware_url, 4, NULL) != pdPASS) {
             free(firmware_url);
             storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
                                    ZIC_LOG_AUDIT, "ota rejected; task creation failed");

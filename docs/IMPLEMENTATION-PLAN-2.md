@@ -139,6 +139,17 @@ bad OTA image.
   recoverable manufacturing procedure; irreversible eFuse operations are never automated by
   ordinary development scripts.
 
+**Hardware evidence (2026-07-19):**
+
+- The rollback-enabled bootloader, two-slot partition table and signed baseline were provisioned
+  on ESP32-S3 device `3c:0f:02:c9:8c:0c` through the physical service interface.
+- A signed healthy OTA booted from the alternate slot, inhibited irrigation while unconfirmed
+  and was marked valid after the 30-second health window.
+- A signed fault-injection image entered `pending_confirmation`, failed its health check, was
+  marked invalid and automatically returned to the previously verified slot.
+- Persistent audit events and the restored HTTP service were verified after rollback. Controlled
+  power-interruption trials remain pending under Step 10 FAT.
+
 **Commit:** `Plan 2 Step 3: Enforce trusted OTA and rollback`
 
 ---
@@ -344,7 +355,7 @@ For each step:
 |---|---|---|
 | 1. Living RTM | Complete | `Plan 2 Step 1: Establish MEP requirements traceability` |
 | 2. HTTP authentication | Not started | - |
-| 3. OTA trust and rollback | Implementation complete; hardware verification pending | `Plan 2 Step 3: Enforce trusted OTA and rollback` |
+| 3. OTA trust and rollback | Signed OTA and automatic rollback hardware-verified; power-interruption FAT pending | `Plan 2 Step 3: Enforce trusted OTA and rollback` |
 | 4. Hydraulic safety configuration | Not started | - |
 | 5. Relay and valve diagnostics | Not started | - |
 | 6. Integrated diagnostics | Not started | - |

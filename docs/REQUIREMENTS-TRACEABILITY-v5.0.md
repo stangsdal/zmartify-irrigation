@@ -2,7 +2,7 @@
 
 **Project:** Zmartify Irrigation Controller
 **Baseline:** Master Engineering Package (MEP) v5.0 plus active WaterSensor v5.1 addendum
-**RTM version:** 1.0
+**RTM version:** 1.1
 **Created:** 2026-07-19
 **Owner:** Firmware and system engineering
 **Plan:** [Implementation Plan 2](IMPLEMENTATION-PLAN-2.md), Step 1
@@ -117,7 +117,7 @@ The MEP reuses `UI-001..005` for two different requirement sets. This RTM uses o
 | FR-PER-002 | Touch response below 100 ms | `Not Verified` | Touch/LVGL runtime exists | Instrumented latency test absent | 9 |
 | FR-PER-003 | MQTT alarm publication within 1 second | `Not Verified` | Alarm publication path exists | Timed broker integration test absent | 7 |
 | FR-PER-004 | Flow updates every second or faster | `Not Verified` | Online WaterSensor poll target is 500 ms | Device timing/age evidence absent | 10 |
-| FR-MNT-001 | Support OTA firmware updates | `Partial` | Signed direct and HTTPS command-triggered OTA paths with explicit states | Signature rejection automated; physical rollback and interruption FAT pending | 3, 10 |
+| FR-MNT-001 | Support OTA firmware updates | `Partial` | Signed direct and HTTPS command-triggered OTA paths with explicit states | Signature rejection automated; signed healthy OTA and automatic unhealthy-image rollback verified on ESP32-S3; power-interruption FAT pending | 3, 10 |
 | FR-MNT-002 | Export complete controller configuration | `Missing` | Log export is not configuration export | No round-trip test | 8 |
 | FR-MNT-003 | Restore controller configuration | `Missing` | Network update endpoint is not full restore | No migration/restore test | 8 |
 | FR-MNT-004 | Hardware self-test available from service menu | `Partial` | Relay test script exists outside HMI | No service-menu self-test acceptance | 9 |
@@ -250,7 +250,7 @@ through the following stable chapter-level keys until the source documents assig
 | MEP-V1-C7-SW | ESP-IDF, coding, task, storage and software baseline | `Partial` | Build and modules exist; several architecture promises incomplete | 6, 8 |
 | MEP-V1-C8-CONOPS | Auto/manual/service/fault operation and recovery | `Partial` | Auto/manual/fault paths exist; service mode incomplete | 9 |
 | MEP-V1-C9-PERF | Availability, timing, storage, sensor, network and reliability targets | `Not Verified` | No consolidated performance/endurance evidence | 10 |
-| MEP-V1-C10-SAFETY | Watchdogs, independent safety layers, recovery and incident handling | `Partial` | Task WDT configured; rollback/power/door/24 VAC gaps remain | 3, 5, 6 |
+| MEP-V1-C10-SAFETY | Watchdogs, independent safety layers, recovery and incident handling | `Partial` | Task WDT and automatic OTA rollback verified; power/door/24 VAC gaps remain | 3, 5, 6 |
 | MEP-V1-C11-VV | Full traceability, unit/integration/FAT/SAT/long-term verification | `Partial` | This RTM and host CI exist; FAT/SAT/long-term absent | 10 |
 | MEP-V2-C4-HAL | HAL isolation and required peripheral services | `Partial` | I2C/relay/time/storage/sensors exist; hardware verification incomplete | 10 |
 | MEP-V2-C5-IRR | Irrigation engine sequencing, authorization and safe cancellation | `Partial` | Core sequencing implemented; cycle/soak and full authorization incomplete | 2, 9 |
