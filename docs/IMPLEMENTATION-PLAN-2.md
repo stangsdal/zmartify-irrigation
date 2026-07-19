@@ -421,6 +421,45 @@ lifecycle without weakening critical lockout.
 - Alarm transitions reject invalid state changes.
 - Critical hydraulic lockout cannot be cleared merely by acknowledging an alarm.
 
+**Implementation and verification (2026-07-19):**
+
+- Configuration migration now uses an atomic schema dispatcher. Schema 1 advances to schema 2,
+  then schema 2 advances to schema 3; the candidate is committed only after current safety
+  validation. Representative v1/v2 tests verify defaults and preservation of existing values,
+  while unsupported and invalid candidates prove the source snapshot remains unchanged.
+- The raw pre-migration blob is retained as `cfg_recovery` before the primary key is replaced.
+  Existing invalid blobs enter a documented safe mode using validated defaults with
+  `CONFIG_MODE_OFF`; normal commits are rejected. Safe-mode and recovery markers survive reboot,
+  and a later boot atomically promotes a valid recovery copy to primary configuration with a
+  normalized CRC. First boot without a blob remains distinct from migration failure.
+- Configuration commits now publish `EVENT_CONFIG_CHANGED` with a versioned,
+  `EVENT_PAYLOAD_CONFIG_CHANGE` payload and section mask instead of the placeholder system-fault
+  event. The detailed policy is defined in
+  [CONFIG-ALARM-LIFECYCLE.md](CONFIG-ALARM-LIFECYCLE.md).
+- Alarm records implement `active`, `acknowledged`, `resolved` and `cleared` transitions. Warning
+  and information conditions recover automatically; critical and safety-specific codes require
+  condition resolution, acknowledgment and explicit manual clear. Acknowledgment alone retains
+  lockout, critical severity cannot be downgraded, and reactivation requires fresh acknowledgment.
+- Current alarms and a separate 32-transition history ring persist in a versioned CRC snapshot.
+  Valid snapshots restore uncleared lockout after reboot; corrupt snapshots fail closed by raising
+  a critical irrigation fault. Protected HMI acknowledge/manual-clear actions remain Step 9 scope.
+- All 14 host tests pass, including new transition, invalid-state, reactivation, severity,
+  snapshot round-trip/corruption and schema migration coverage. The signed ESP32-S3 image builds
+  at `0x151000` with 21 percent app-partition headroom.
+- Live fail-closed validation exposed two pre-existing boot defects: the persistent-configuration
+  CRC included its own stored checksum, and telemetry could call diagnostics before its snapshot
+  callback was initialized. CRC calculation now normalizes the checksum field, and diagnostics
+  initialization precedes task startup. The full 14-test suite plus 50 repeated suite iterations
+  passed after these repairs.
+- The final signed image (SHA-256
+  `7771296238b839eceb53dd875a04741eadcb591efe0deac1657d988a010ae7e9`) was OTA-deployed to
+  `192.168.10.113` at 8 KiB/s. The device audit recorded `ota pending health confirmation`
+  followed by `ota image confirmed valid`. A subsequent serial boot matched ELF SHA-256 prefix
+  `b917ef06d`, loaded schema v3 from NVS with CRC OK, showed no configuration safe-mode warning,
+  and passed repeated telemetry snapshots without panic. Runtime/storage were healthy, heap
+  utilization was 39 percent, time was synchronized, no alarm or event drop was present and
+  `ota_acceptable` was true. No valve or irrigation command was issued.
+
 **Commit:** `Plan 2 Step 8: Add config migration and alarm lifecycle`
 
 ---

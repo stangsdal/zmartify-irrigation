@@ -20,6 +20,12 @@ target_include_directories(test_safety_rules PRIVATE
     ../components/flow_manager/include
     ../components/pressure_manager/include)
 
+zic_add_host_test(test_alarm_lifecycle
+    test_alarm_lifecycle.c
+    ../components/alarm_manager/src/alarm_manager.c)
+target_include_directories(test_alarm_lifecycle PRIVATE
+    ../components/alarm_manager/include)
+
 zic_add_host_test(test_config_validation
     test_config_validation.c
     ../components/config_manager/src/config_validation.c)

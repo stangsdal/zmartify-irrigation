@@ -118,6 +118,7 @@ static void test_zone_commissioning(void)
 static void test_schema_v1_migration(void)
 {
     zic_config_t config = valid_config();
+    memset(&config.hydraulics.valve_open_timeout_s, 0, 4);
     alarms_v1_t alarms = {
         .pressure_low_mbar = 500,
         .pressure_high_mbar = 7000,
@@ -140,16 +141,20 @@ static void test_schema_v1_migration(void)
     config.schema_version = 1;
 
     assert(config_migrate_v1(&config));
-    assert(config.schema_version == CONFIG_SCHEMA_VERSION);
+    assert(config.schema_version == 2u);
     assert(config.alarms.pressure_critical_duration_s == 5);
     assert(config.alarms.flow_active_max_age_ms == 1500);
     assert(config.alarms.cabinet_warn_temp_c == 47);
-    assert(config.hydraulics.valve_open_timeout_s == 30);
-    assert(config.hydraulics.valve_close_timeout_s == 10);
+    assert(config.hydraulics.valve_open_timeout_s == 0);
+    assert(config.hydraulics.valve_close_timeout_s == 0);
     assert(config.zones[0].flow_warning_deviation_pct == 15);
     assert(config.zones[0].flow_critical_deviation_pct == 30);
     assert(config.zones[0].seasonal_factor_pct == 95);
     assert(config.zones[0].et_crop_coefficient_x100 == 75);
+    assert(config_migrate_v2(&config));
+    assert(config.schema_version == CONFIG_SCHEMA_VERSION);
+    assert(config.hydraulics.valve_open_timeout_s == 30);
+    assert(config.hydraulics.valve_close_timeout_s == 10);
     assert(config_validate_safety(&config));
     assert(!config_migrate_v1(&config));
 }
@@ -168,11 +173,35 @@ static void test_schema_v2_migration(void)
     assert(!config_migrate_v2(&config));
 }
 
+static void test_atomic_migration_dispatch(void)
+{
+    zic_config_t config = valid_config();
+    config.schema_version = 2u;
+    memset(&config.hydraulics.valve_open_timeout_s, 0, 4);
+    assert(config_migrate_to_current(&config));
+    assert(config.schema_version == CONFIG_SCHEMA_VERSION);
+    assert(config.hydraulics.valve_open_timeout_s == 30u);
+
+    config = valid_config();
+    config.schema_version = 99u;
+    zic_config_t original = config;
+    assert(!config_migrate_to_current(&config));
+    assert(memcmp(&config, &original, sizeof(config)) == 0);
+
+    config = valid_config();
+    config.schema_version = 2u;
+    config.alarms.pressure_low_mbar = config.alarms.pressure_high_mbar;
+    original = config;
+    assert(!config_migrate_to_current(&config));
+    assert(memcmp(&config, &original, sizeof(config)) == 0);
+}
+
 int main(void)
 {
     test_safety_boundaries();
     test_zone_commissioning();
     test_schema_v1_migration();
     test_schema_v2_migration();
+    test_atomic_migration_dispatch();
     return 0;
 }

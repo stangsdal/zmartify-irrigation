@@ -140,6 +140,7 @@ static char s_v2_outcome_topic[128];
 static char s_diagnostics_topic[128];
 static char s_v2_status_topic[128];
 static zic_v2_command_tracker_t s_v2_command_tracker;
+static alarm_manager_snapshot_t s_alarm_snapshot;
 static httpd_handle_t s_ota_http_server;
 
 static void zic_publish_v2_outcome(zic_app_context_t *ctx,
@@ -279,6 +280,32 @@ static bool zic_weather_save(void *context, const void *data, size_t length)
 {
     (void)context;
     return hal_storage_write_blob("weather", data, length) == HAL_OK;
+}
+
+static void zic_alarm_restore(alarm_manager_t *manager)
+{
+    size_t length = sizeof(s_alarm_snapshot);
+    hal_result_t result = hal_storage_read_blob("alarm_state", &s_alarm_snapshot, &length);
+    if (result == HAL_OK &&
+        (length != sizeof(s_alarm_snapshot) ||
+         !alarm_manager_restore_snapshot(manager, &s_alarm_snapshot))) {
+        ESP_LOGE(TAG, "Stored alarm state is corrupt; preserving safety lockout");
+        alarm_manager_raise(manager, ZIC_ALARM_IRRIGATION_FAULT, ZIC_ALARM_CRITICAL);
+    }
+}
+
+static void zic_alarm_flush(alarm_manager_t *manager)
+{
+    if (!alarm_manager_is_dirty(manager) ||
+        !alarm_manager_export_snapshot(manager, &s_alarm_snapshot)) {
+        return;
+    }
+    if (hal_storage_write_blob("alarm_state", &s_alarm_snapshot,
+                               sizeof(s_alarm_snapshot)) == HAL_OK) {
+        alarm_manager_mark_persisted(manager);
+    } else {
+        ESP_LOGE(TAG, "Failed to persist alarm safety state");
+    }
 }
 
 static void zic_ota_restart_task(void *arg)
@@ -997,6 +1024,7 @@ static void zic_runtime_init_context(zic_app_context_t *ctx)
 
     irrigation_engine_init(&ctx->engine);
     alarm_manager_init(&ctx->alarm_manager);
+    zic_alarm_restore(&ctx->alarm_manager);
     flow_manager_init(&ctx->flow_manager);
     config_alarms_t alarm_config;
     (void)config_get_alarms(&alarm_config);
@@ -1509,7 +1537,7 @@ static void zic_control_task(void *arg)
             s_ctx.et_output = (et_output_t){0};
         }
 
-        if (alarm_manager_has_severity(&s_ctx.alarm_manager, ZIC_ALARM_CRITICAL)) {
+        if (alarm_manager_has_lockout(&s_ctx.alarm_manager)) {
             if (!s_ctx.safety_fault_latched) {
                 ESP_LOGE(TAG, "Critical hydraulic alarm; irrigation locked out until reboot");
                 storage_manager_append(&s_ctx.storage_manager, zic_log_timestamp(), ZIC_LOG_ALARM,
@@ -1531,6 +1559,8 @@ static void zic_control_task(void *arg)
             zic_scheduler_advance_program(&s_ctx);
             zic_scheduler_start_due_program(&s_ctx);
         }
+
+        zic_alarm_flush(&s_ctx.alarm_manager);
 
         uint32_t log_timestamp = zic_log_timestamp();
         if (log_timestamp != 0 &&
@@ -1777,11 +1807,6 @@ void app_main(void)
     zic_runtime_init_context(&s_ctx);
     xSemaphoreGive(s_ctx_lock);
 
-    xTaskCreate(zic_control_task, "zic_ctrl", ZIC_CTRL_TASK_STACK, NULL,
-                ZIC_CTRL_TASK_PRIO, &s_control_task_handle);
-    xTaskCreate(zic_telemetry_task, "zic_telem", ZIC_TELEM_TASK_STACK, NULL,
-                ZIC_TELEM_TASK_PRIO, &s_telemetry_task_handle);
-
     const diagnostics_manager_config_t diagnostics_config = {
         .snapshot = zic_diagnostics_snapshot,
         .raise_critical_alarm = zic_diagnostics_raise_critical,
@@ -1792,4 +1817,9 @@ void app_main(void)
     if (!diagnostics_manager_init(&diagnostics_config)) {
         ESP_LOGE(TAG, "Diagnostics Manager initialization failed; OTA images remain unconfirmed");
     }
+
+    xTaskCreate(zic_control_task, "zic_ctrl", ZIC_CTRL_TASK_STACK, NULL,
+                ZIC_CTRL_TASK_PRIO, &s_control_task_handle);
+    xTaskCreate(zic_telemetry_task, "zic_telem", ZIC_TELEM_TASK_STACK, NULL,
+                ZIC_TELEM_TASK_PRIO, &s_telemetry_task_handle);
 }

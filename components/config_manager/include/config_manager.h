@@ -35,7 +35,32 @@ typedef enum
     CFG_ZONE_INVALID    = 6,
     CFG_PROGRAM_INVALID = 7,
     CFG_VALIDATION_ERROR= 8,
+    CFG_SAFE_MODE       = 9,
 } cfg_result_t;
+
+typedef enum
+{
+    CONFIG_CHANGE_NONE       = 0,
+    CONFIG_CHANGE_SYSTEM     = 1u << 0,
+    CONFIG_CHANGE_NETWORK    = 1u << 1,
+    CONFIG_CHANGE_HYDRAULICS = 1u << 2,
+    CONFIG_CHANGE_ALARMS     = 1u << 3,
+    CONFIG_CHANGE_ZONES      = 1u << 4,
+    CONFIG_CHANGE_PROGRAMS   = 1u << 5,
+    CONFIG_CHANGE_ALL        = 0x3Fu,
+} config_change_mask_t;
+
+typedef struct
+{
+    uint8_t payload_version;
+    uint8_t payload_size;
+    uint16_t schema_version;
+    uint32_t changed_sections;
+    uint8_t factory_reset;
+    uint8_t reserved[3];
+} config_change_event_t;
+
+#define CONFIG_CHANGE_EVENT_VERSION 1u
 
 /* ─── Lifecycle ───────────────────────────────────────────────────────── */
 
@@ -147,3 +172,13 @@ uint16_t config_get_schema_version(void);
  * @brief Check whether configuration has been modified but not committed.
  */
 bool config_is_dirty(void);
+
+/**
+ * @brief True when boot recovered from an invalid stored configuration.
+ *
+ * Safe mode uses validated defaults with irrigation disabled and rejects normal commits.
+ */
+bool config_is_safe_mode(void);
+
+/** @brief True when the original failed or pre-migration blob is retained in NVS. */
+bool config_has_recovery_snapshot(void);

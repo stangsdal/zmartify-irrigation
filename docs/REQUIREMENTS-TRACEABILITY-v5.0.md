@@ -110,16 +110,16 @@ The MEP reuses `UI-001..005` for two different requirement sets. This RTM uses o
 | FR-MQTT-004 | Subscribe to commands, configuration and OTA requests | `Partial` | Authenticated validated irrigation subset implemented; MQTT configuration/OTA deliberately deferred to controlled interfaces | [MQTT contract host test](../test/test_mqtt_v2_contract.c) and [broker test](../test/test_mqtt_broker_contract.sh) | 2, 10 |
 | FR-ALM-001 | Information, warning and critical categories | `Implemented` | Severity model in [alarm_manager.h](../components/alarm_manager/include/alarm_manager.h) | Safety rules tests | - |
 | FR-ALM-002 | Required critical catalog includes hydraulic, master, watchdog and emergency faults | `Partial` | Hydraulic codes exist | Master/watchdog/emergency catalog and injection tests incomplete | 8 |
-| FR-ALM-003 | Critical alarms remain active until acknowledged | `Missing` | No acknowledged/resolved/cleared lifecycle | No lifecycle test | 8 |
-| FR-LOG-001 | Persistent logs cover irrigation, alarms, weather, hydraulic, users and config | `Partial` | CRC NVS log with broad categories in [storage_manager.c](../components/storage_manager/src/storage_manager.c) | Storage tests; categories are less granular than FRS | 6 |
+| FR-ALM-003 | Critical alarms remain active until acknowledged | `Partial` | Persisted active/acknowledged/resolved/cleared lifecycle retains lockout through acknowledgment and reboot; protected HMI action is pending | [Alarm lifecycle test](../test/test_alarm_lifecycle.c) and [lifecycle contract](CONFIG-ALARM-LIFECYCLE.md) | 9 |
+| FR-LOG-001 | Persistent logs cover irrigation, alarms, weather, hydraulic, users and config | `Partial` | CRC NVS operational log plus separate CRC alarm-transition history | [Storage test](../test/test_storage_manager.c) and [alarm lifecycle test](../test/test_alarm_lifecycle.c); user/source categories remain incomplete | 9 |
 | FR-LOG-002 | Entry contains timestamp, source, event, severity and additional data | `Partial` | Current schema has timestamp, type and message | Schema lacks explicit source/severity/structured data | 6 |
 | FR-PER-001 | Boot within 30 seconds | `Not Verified` | Boot path exists | Measured cold-boot report absent | 10 |
 | FR-PER-002 | Touch response below 100 ms | `Not Verified` | Touch/LVGL runtime exists | Instrumented latency test absent | 9 |
 | FR-PER-003 | MQTT alarm publication within 1 second | `Not Verified` | Critical QoS 2 path exists | Timed routed broker integration test pending | 10 |
 | FR-PER-004 | Flow updates every second or faster | `Not Verified` | Online WaterSensor poll target is 500 ms | Device timing/age evidence absent | 10 |
 | FR-MNT-001 | Support OTA firmware updates | `Partial` | Signed direct and HTTPS command-triggered OTA paths with explicit states | Signature rejection automated; signed healthy OTA and automatic unhealthy-image rollback verified on ESP32-S3; power-interruption FAT pending | 3, 10 |
-| FR-MNT-002 | Export complete controller configuration | `Missing` | Log export is not configuration export | No round-trip test | 8 |
-| FR-MNT-003 | Restore controller configuration | `Missing` | Network update endpoint is not full restore | No migration/restore test | 8 |
+| FR-MNT-002 | Export complete controller configuration | `Missing` | Internal pre-migration recovery copy is not a user export interface | No export round-trip test | 9 |
+| FR-MNT-003 | Restore controller configuration | `Partial` | Atomic schema migration and retained recovery blob exist; complete authenticated user restore is absent | [Configuration migration test](../test/test_config_validation.c) | 9 |
 | FR-MNT-004 | Hardware self-test available from service menu | `Partial` | Relay test script exists outside HMI | No service-menu self-test acceptance | 9 |
 
 ## 6. Hardware Requirements
@@ -260,10 +260,10 @@ through the following stable chapter-level keys until the source documents assig
 | MEP-V2-C9-ET | Reference/crop ET, failure handling and diagnostics | `Partial` | FAO-56 daily model and tests; site calibration/event integration incomplete | 6, 10 |
 | MEP-V2-C10-FLOW | Learning, anomaly policy and predictive diagnostics | `Partial` | Anomaly supervision exists; learning/predictive diagnostics missing | 5 |
 | MEP-V2-C11-PRESS | Pressure acquisition, baseline, faults and diagnostics | `Partial` | Fault supervision exists; baseline learning/calibration incomplete | 4, 5 |
-| MEP-V2-C12-ALARM | Full alarm model, lifecycle, actions and history | `Partial` | Severity/active state exists; acknowledge/resolve lifecycle missing | 8 |
+| MEP-V2-C12-ALARM | Full alarm model, lifecycle, actions and history | `Partial` | Versioned state machine, manual critical lockout and CRC transition history implemented; protected HMI actions remain | [Alarm lifecycle contract](CONFIG-ALARM-LIFECYCLE.md), 9 |
 | MEP-V2-C13-MQTT | TLS, topics, QoS, validation, reconnect and discovery | `Partial` | MQTT v5 TLS/topic/QoS/validation/reconnect subset implemented; Home Assistant discovery not in product scope and routed broker acceptance pending | [MQTT v5 contract](MQTT-V5-CONTRACT.md), 10 |
-| MEP-V2-C14-CONFIG | Versioned schema, validation, migration and audit events | `Partial` | CRC/version/config exists; migration resets instead of converting | 4, 8 |
-| MEP-V2-C15-STORAGE | Typed persistent data, retention, integrity and diagnostics | `Partial` | Event/weather persistence and write-health diagnostics exist; full data model/backups incomplete | 8 |
+| MEP-V2-C14-CONFIG | Versioned schema, validation, migration and audit events | `Implemented` | Atomic v1-v2-v3 migration, recovery-copy safe mode and versioned typed change events are tested | [Configuration/alarm contract](CONFIG-ALARM-LIFECYCLE.md) and [migration test](../test/test_config_validation.c) | - |
+| MEP-V2-C15-STORAGE | Typed persistent data, retention, integrity and diagnostics | `Partial` | Event/weather persistence, config recovery and CRC alarm history exist; complete user backup/data model remains incomplete | 9 |
 | MEP-V2-C16-OTA | Trusted download, validation, health confirmation and rollback | `Partial` | RSA-signed updates, HTTPS remote policy, live health confirmation, rollback guard and persistent audit integrated | Physical rollback, interruption and production-key FAT pending | 3, 10 |
 | MEP-V2-C17-DIAG | Authoritative system health, task/resource/event/sensor metrics | `Implemented` | Live managers feed tested health policy; bounded HTTP/MQTT snapshot and OTA gate expose heap, task, event, alarm, sensor, communication and storage state | [Diagnostics policy tests](../test/test_diagnostics_policy.c); signed ESP32-S3 OTA and live `/health` metrics verified 2026-07-19 | - |
 | MEP-V2-C19-SEC | Authentication, authorization, TLS, secure boot and flash encryption | `Missing` | MQTT TLS exists; HTTP auth, secure boot and flash encryption absent | 2, 3 |

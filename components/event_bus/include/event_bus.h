@@ -57,6 +57,12 @@ typedef enum
     EVENT_PRIORITY_SAFETY = 15,
 } event_priority_e;
 
+typedef enum
+{
+    EVENT_PAYLOAD_NONE = 0,
+    EVENT_PAYLOAD_CONFIG_CHANGE = 1,
+} event_payload_type_e;
+
 /**
  * Event identifiers (assigned by producer modules)
  *
@@ -122,6 +128,9 @@ typedef enum
 
     // Diagnostic events
     EVENT_DIAGNOSTICS_REPORT = 0x0A00,
+
+    // Configuration events
+    EVENT_CONFIG_CHANGED = 0x0B00,
 } event_id_e;
 
 /**

@@ -147,9 +147,6 @@ bool config_migrate_v1(zic_config_t *config)
     config->alarms.flow_idle_max_age_ms = 5000;
     config->alarms.cabinet_warn_temp_c = legacy_alarms.cabinet_warn_temp_c;
     config->alarms.cabinet_crit_temp_c = legacy_alarms.cabinet_crit_temp_c;
-    config->hydraulics.valve_open_timeout_s = 30;
-    config->hydraulics.valve_close_timeout_s = 10;
-
     for (uint8_t index = 0; index < CONFIG_MAX_ZONES; ++index) {
         config_zone_v1_t legacy_zone;
         memcpy(&legacy_zone, &config->zones[index], sizeof(legacy_zone));
@@ -159,7 +156,7 @@ bool config_migrate_v1(zic_config_t *config)
         config->zones[index].et_crop_coefficient_x100 =
             legacy_zone.et_crop_coefficient_x100;
     }
-    config->schema_version = CONFIG_SCHEMA_VERSION;
+    config->schema_version = 2u;
     return true;
 }
 
@@ -171,6 +168,36 @@ bool config_migrate_v2(zic_config_t *config)
     config->hydraulics.valve_open_timeout_s = 30;
     config->hydraulics.valve_close_timeout_s = 10;
     config->schema_version = CONFIG_SCHEMA_VERSION;
+    return true;
+}
+
+bool config_migrate_to_current(zic_config_t *config)
+{
+    if (config == NULL) {
+        return false;
+    }
+
+    zic_config_t candidate = *config;
+    while (candidate.schema_version != CONFIG_SCHEMA_VERSION) {
+        bool migrated = false;
+        switch (candidate.schema_version) {
+        case 1u:
+            migrated = config_migrate_v1(&candidate);
+            break;
+        case 2u:
+            migrated = config_migrate_v2(&candidate);
+            break;
+        default:
+            return false;
+        }
+        if (!migrated) {
+            return false;
+        }
+    }
+    if (!config_validate_safety(&candidate)) {
+        return false;
+    }
+    *config = candidate;
     return true;
 }
 

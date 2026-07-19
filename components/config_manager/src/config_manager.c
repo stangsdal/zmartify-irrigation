@@ -24,6 +24,10 @@ static const char *TAG = "cfg_mgr";
 
 /* NVS key for the configuration blob */
 #define CFG_NVS_KEY  "cfg_blob"
+#define CFG_RECOVERY_NVS_KEY "cfg_recovery"
+#define CFG_SAFE_MODE_NVS_KEY "cfg_safe"
+#define CFG_RECOVERY_MARKER_NVS_KEY "cfg_recover"
+#define CFG_RAW_MAX_SIZE 4096u
 
 /* ─── Module state ──────────────────────────────────────────────────── */
 
@@ -32,6 +36,12 @@ static SemaphoreHandle_t s_lock       = NULL;
 static bool              s_initialized = false;
 static bool              s_dirty       = false;
 static bool              s_migrated    = false;
+static bool              s_safe_mode   = false;
+static bool              s_raw_config_present = false;
+static bool              s_recovery_present = false;
+static uint32_t          s_change_mask = CONFIG_CHANGE_NONE;
+static uint8_t           s_raw_config[CFG_RAW_MAX_SIZE];
+static size_t            s_raw_config_len;
 
 /* ─── CRC helpers ───────────────────────────────────────────────────── */
 
@@ -42,8 +52,9 @@ static bool              s_migrated    = false;
  */
 static uint32_t compute_crc(const zic_config_t *cfg)
 {
-    /* Start computing from `schema_version` field (offset of schema_version) */
-    const uint8_t *start = (const uint8_t *)&cfg->schema_version;
+    zic_config_t candidate = *cfg;
+    candidate.crc32 = 0u;
+    const uint8_t *start = (const uint8_t *)&candidate.schema_version;
     size_t len = sizeof(zic_config_t) - offsetof(zic_config_t, schema_version);
     return esp_rom_crc32_le(0, start, (uint32_t)len);
 }
@@ -134,16 +145,24 @@ static void apply_factory_defaults(zic_config_t *cfg)
 
 /* ─── Load / save ─────────────────────────────────────────────────────── */
 
-static cfg_result_t load_from_nvs(void)
+static cfg_result_t load_from_key(const char *key)
 {
-    size_t len = sizeof(zic_config_t);
-    hal_result_t r = hal_storage_read_blob(CFG_NVS_KEY, &s_config, &len);
+    s_raw_config_len = sizeof(s_raw_config);
+    hal_result_t r = hal_storage_read_blob(key, s_raw_config, &s_raw_config_len);
 
-    if (r != HAL_OK || len != sizeof(zic_config_t))
+    if (r != HAL_OK)
     {
-        ESP_LOGW(TAG, "Config blob not found or wrong size – applying factory defaults");
+        ESP_LOGW(TAG, "Config blob not found");
         return CFG_STORAGE_ERROR;
     }
+    s_raw_config_present = true;
+    if (s_raw_config_len != sizeof(zic_config_t))
+    {
+        ESP_LOGW(TAG, "Config blob size %u does not match supported schemas",
+                 (unsigned)s_raw_config_len);
+        return CFG_VERSION_MISMATCH;
+    }
+    memcpy(&s_config, s_raw_config, sizeof(s_config));
 
     /* Sanity check: magic */
     if (s_config.magic != CONFIG_MAGIC)
@@ -161,29 +180,17 @@ static cfg_result_t load_from_nvs(void)
         return CFG_CRC_ERROR;
     }
 
-    if (s_config.schema_version == 1u)
+    uint16_t original_schema = s_config.schema_version;
+    if (!config_migrate_to_current(&s_config))
     {
-        if (!config_migrate_v1(&s_config))
-        {
-            return CFG_VERSION_MISMATCH;
-        }
-        s_migrated = true;
-        ESP_LOGI(TAG, "Config migrated from schema v1 to v%u", CONFIG_SCHEMA_VERSION);
-    }
-    else if (s_config.schema_version == 2u)
-    {
-        if (!config_migrate_v2(&s_config))
-        {
-            return CFG_VERSION_MISMATCH;
-        }
-        s_migrated = true;
-        ESP_LOGI(TAG, "Config migrated from schema v2 to v%u", CONFIG_SCHEMA_VERSION);
-    }
-    else if (s_config.schema_version != CONFIG_SCHEMA_VERSION)
-    {
-        ESP_LOGW(TAG, "Config schema %u, current %u – resetting",
-                 s_config.schema_version, CONFIG_SCHEMA_VERSION);
+        ESP_LOGW(TAG, "Config schema %u cannot migrate safely", original_schema);
         return CFG_VERSION_MISMATCH;
+    }
+    s_migrated = original_schema != CONFIG_SCHEMA_VERSION;
+    if (s_migrated)
+    {
+        ESP_LOGI(TAG, "Config migrated from schema v%u to v%u",
+                 original_schema, CONFIG_SCHEMA_VERSION);
     }
 
     if (!config_validate_safety(&s_config))
@@ -194,6 +201,11 @@ static cfg_result_t load_from_nvs(void)
 
     ESP_LOGI(TAG, "Config loaded from NVS (schema v%u, CRC OK)", s_config.schema_version);
     return CFG_OK;
+}
+
+static cfg_result_t load_from_nvs(void)
+{
+    return load_from_key(CFG_NVS_KEY);
 }
 
 static cfg_result_t save_to_nvs(void)
@@ -214,6 +226,40 @@ static cfg_result_t save_to_nvs(void)
     return CFG_OK;
 }
 
+static bool preserve_raw_config(void)
+{
+    if (s_recovery_present)
+    {
+        return true;
+    }
+    if (!s_raw_config_present || s_raw_config_len == 0u ||
+        s_raw_config_len > sizeof(s_raw_config))
+    {
+        return false;
+    }
+    bool saved = hal_storage_write_blob(CFG_RECOVERY_NVS_KEY, s_raw_config,
+                                        s_raw_config_len) == HAL_OK &&
+        hal_storage_write_bool(CFG_RECOVERY_MARKER_NVS_KEY, true) == HAL_OK;
+    if (saved)
+    {
+        s_recovery_present = true;
+    }
+    return saved;
+}
+
+static void publish_change(uint32_t changed_sections, bool factory_reset)
+{
+    config_change_event_t event = {
+        .payload_version = CONFIG_CHANGE_EVENT_VERSION,
+        .payload_size = sizeof(config_change_event_t),
+        .schema_version = CONFIG_SCHEMA_VERSION,
+        .changed_sections = changed_sections,
+        .factory_reset = factory_reset ? 1u : 0u,
+    };
+    (void)event_bus_publish(EVENT_CONFIG_CHANGED, 0, EVENT_PRIORITY_NORMAL,
+                            EVENT_PAYLOAD_CONFIG_CHANGE, &event, sizeof(event));
+}
+
 /* ─── Public API ──────────────────────────────────────────────────────── */
 
 cfg_result_t config_manager_init(void)
@@ -230,16 +276,69 @@ cfg_result_t config_manager_init(void)
         return CFG_STORAGE_ERROR;
     }
 
-    cfg_result_t r = load_from_nvs();
+    (void)hal_storage_read_bool(CFG_SAFE_MODE_NVS_KEY, &s_safe_mode, false);
+    (void)hal_storage_read_bool(CFG_RECOVERY_MARKER_NVS_KEY,
+                                &s_recovery_present, false);
+
+    cfg_result_t r = CFG_STORAGE_ERROR;
+    if (s_safe_mode && s_recovery_present)
+    {
+        r = load_from_key(CFG_RECOVERY_NVS_KEY);
+        if (r == CFG_OK && save_to_nvs() == CFG_OK)
+        {
+            s_safe_mode = false;
+            s_recovery_present = false;
+            s_migrated = false;
+            (void)hal_storage_erase_key(CFG_RECOVERY_NVS_KEY);
+            (void)hal_storage_erase_key(CFG_SAFE_MODE_NVS_KEY);
+            (void)hal_storage_erase_key(CFG_RECOVERY_MARKER_NVS_KEY);
+            ESP_LOGW(TAG, "Validated configuration restored from recovery copy");
+        }
+        else
+        {
+            s_raw_config_present = false;
+            r = load_from_nvs();
+        }
+    }
+    else
+    {
+        r = load_from_nvs();
+    }
     if (r != CFG_OK)
     {
-        /* Corruption or first boot – apply factory defaults */
+        bool existing_blob_failed = s_raw_config_present;
+        bool recovery_saved = !existing_blob_failed || preserve_raw_config();
+        if (!recovery_saved)
+        {
+            ESP_LOGE(TAG, "Failed to preserve invalid configuration recovery copy");
+        }
         apply_factory_defaults(&s_config);
-        save_to_nvs();
-        ESP_LOGI(TAG, "Factory defaults applied and committed");
+        s_safe_mode = existing_blob_failed || s_safe_mode;
+        bool safe_mode_saved = true;
+        if (s_safe_mode)
+        {
+            s_config.system.operational_mode = CONFIG_MODE_OFF;
+            safe_mode_saved = hal_storage_write_bool(CFG_SAFE_MODE_NVS_KEY, true) == HAL_OK;
+            ESP_LOGE(TAG, "Configuration safe mode active; irrigation disabled");
+        }
+        if (recovery_saved && safe_mode_saved)
+        {
+            (void)save_to_nvs();
+        }
+        else if (existing_blob_failed)
+        {
+            ESP_LOGE(TAG, "Recovery transaction incomplete; primary config left intact");
+        }
+        ESP_LOGI(TAG, "Validated defaults applied%s",
+                 s_safe_mode ? " in safe mode" : " and committed");
     }
     else if (s_migrated)
     {
+        if (!preserve_raw_config())
+        {
+            ESP_LOGE(TAG, "Migration recovery copy failed; NVS preserved, startup aborted");
+            return CFG_STORAGE_ERROR;
+        }
         r = save_to_nvs();
         if (r != CFG_OK)
         {
@@ -247,8 +346,14 @@ cfg_result_t config_manager_init(void)
         }
         ESP_LOGI(TAG, "Migrated configuration committed");
     }
+    if (s_safe_mode)
+    {
+        s_config.system.operational_mode = CONFIG_MODE_OFF;
+        ESP_LOGW(TAG, "Persisted configuration safe mode remains active");
+    }
 
     s_dirty       = false;
+    s_change_mask = CONFIG_CHANGE_NONE;
     s_initialized = true;
     ESP_LOGI(TAG, "Configuration Manager ready (schema v%u)", s_config.schema_version);
     return CFG_OK;
@@ -259,6 +364,10 @@ cfg_result_t config_manager_commit(void)
     if (!s_initialized)
     {
         return CFG_NOT_INITIALIZED;
+    }
+    if (s_safe_mode)
+    {
+        return CFG_SAFE_MODE;
     }
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -272,9 +381,8 @@ cfg_result_t config_manager_commit(void)
     if (r == CFG_OK)
     {
         s_dirty = false;
-        /* Publish config-changed event */
-        event_bus_publish(EVENT_SYSTEM_FAULT,   /* placeholder – will be EVENT_CONFIG_CHANGED in Step 6 */
-                          0, EVENT_PRIORITY_NORMAL, 0, NULL, 0);
+        publish_change(s_change_mask, false);
+        s_change_mask = CONFIG_CHANGE_NONE;
     }
     xSemaphoreGive(s_lock);
     return r;
@@ -290,7 +398,17 @@ cfg_result_t config_manager_restore_defaults(void)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     apply_factory_defaults(&s_config);
     cfg_result_t r = save_to_nvs();
-    s_dirty = false;
+    if (r == CFG_OK)
+    {
+        s_dirty = false;
+        s_safe_mode = false;
+        s_recovery_present = false;
+        s_change_mask = CONFIG_CHANGE_NONE;
+        (void)hal_storage_erase_key(CFG_RECOVERY_NVS_KEY);
+        (void)hal_storage_erase_key(CFG_SAFE_MODE_NVS_KEY);
+        (void)hal_storage_erase_key(CFG_RECOVERY_MARKER_NVS_KEY);
+        publish_change(CONFIG_CHANGE_ALL, true);
+    }
     xSemaphoreGive(s_lock);
 
     ESP_LOGW(TAG, "Factory reset complete");
@@ -347,6 +465,7 @@ cfg_result_t config_set_system(const config_system_t *in)
              (unsigned long)in->global_max_runtime_s);
     memcpy(&s_config.system, in, sizeof(config_system_t));
     s_dirty = true;
+    s_change_mask |= CONFIG_CHANGE_SYSTEM;
     xSemaphoreGive(s_lock);
     return CFG_OK;
 }
@@ -374,6 +493,7 @@ cfg_result_t config_set_network(const config_network_t *in)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     memcpy(&s_config.network, in, sizeof(config_network_t));
     s_dirty = true;
+    s_change_mask |= CONFIG_CHANGE_NETWORK;
     xSemaphoreGive(s_lock);
     return CFG_OK;
 }
@@ -410,6 +530,7 @@ cfg_result_t config_set_hydraulics(const config_hydraulic_t *in)
              (double)in->pressure_offset_mv);
     memcpy(&s_config.hydraulics, in, sizeof(config_hydraulic_t));
     s_dirty = true;
+    s_change_mask |= CONFIG_CHANGE_HYDRAULICS;
     xSemaphoreGive(s_lock);
     return CFG_OK;
 }
@@ -449,6 +570,7 @@ cfg_result_t config_set_alarms(const config_alarms_t *in)
              in->pressure_low_mbar, in->pressure_high_mbar);
     memcpy(&s_config.alarms, in, sizeof(config_alarms_t));
     s_dirty = true;
+    s_change_mask |= CONFIG_CHANGE_ALARMS;
     xSemaphoreGive(s_lock);
     return CFG_OK;
 }
@@ -499,6 +621,7 @@ cfg_result_t config_set_zone(uint8_t zone_index, const config_zone_t *in)
              in->pressure_min_mbar, in->pressure_max_mbar);
     memcpy(&s_config.zones[zone_index], in, sizeof(config_zone_t));
     s_dirty = true;
+    s_change_mask |= CONFIG_CHANGE_ZONES;
     xSemaphoreGive(s_lock);
     return CFG_OK;
 }
@@ -542,6 +665,7 @@ cfg_result_t config_commission_zone(uint8_t zone_index,
              candidate.pressure_min_mbar, candidate.pressure_max_mbar);
     s_config.zones[zone_index] = candidate;
     s_dirty = true;
+    s_change_mask |= CONFIG_CHANGE_ZONES;
     xSemaphoreGive(s_lock);
     return CFG_OK;
 }
@@ -578,6 +702,7 @@ cfg_result_t config_set_program(uint8_t program_index, const config_program_t *i
     xSemaphoreTake(s_lock, portMAX_DELAY);
     memcpy(&s_config.programs[program_index], in, sizeof(config_program_t));
     s_dirty = true;
+    s_change_mask |= CONFIG_CHANGE_PROGRAMS;
     xSemaphoreGive(s_lock);
     return CFG_OK;
 }
@@ -592,4 +717,14 @@ uint16_t config_get_schema_version(void)
 bool config_is_dirty(void)
 {
     return s_dirty;
+}
+
+bool config_is_safe_mode(void)
+{
+    return s_safe_mode;
+}
+
+bool config_has_recovery_snapshot(void)
+{
+    return s_recovery_present;
 }
