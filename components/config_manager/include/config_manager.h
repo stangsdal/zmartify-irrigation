@@ -94,6 +94,16 @@ cfg_result_t config_set_network(const config_network_t *in);
 cfg_result_t config_get_hydraulics(config_hydraulic_t *out);
 cfg_result_t config_set_hydraulics(const config_hydraulic_t *in);
 
+/**
+ * @brief Apply observed stable flow and pressure as a zone commissioning baseline.
+ *
+ * Sets expected flow and a conservative +/-20 percent pressure envelope. The
+ * change remains in RAM until config_manager_commit() succeeds.
+ */
+cfg_result_t config_commission_zone(uint8_t zone_index,
+                                    uint16_t observed_flow_lpm_x10,
+                                    uint16_t observed_pressure_mbar);
+
 /* ─── Alarms ──────────────────────────────────────────────────────────── */
 
 cfg_result_t config_get_alarms(config_alarms_t *out);

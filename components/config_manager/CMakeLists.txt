@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "src/config_manager.c"
+    SRCS "src/config_manager.c" "src/config_validation.c"
     INCLUDE_DIRS "include"
     REQUIRES
         freertos

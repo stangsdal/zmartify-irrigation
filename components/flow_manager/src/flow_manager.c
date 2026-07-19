@@ -21,6 +21,20 @@ void flow_manager_init(flow_manager_t *manager)
     manager->low_flow_since_ms = 0;
     manager->high_flow_since_ms = 0;
     manager->unexpected_flow_since_ms = 0;
+    manager->warning_deviation_pct = 0;
+    manager->critical_deviation_pct = 0;
+}
+
+void flow_manager_set_deviation_limits(flow_manager_t *manager,
+                                       uint8_t warning_deviation_pct,
+                                       uint8_t critical_deviation_pct)
+{
+    if (manager == 0 || warning_deviation_pct == 0 ||
+        warning_deviation_pct >= critical_deviation_pct) {
+        return;
+    }
+    manager->warning_deviation_pct = warning_deviation_pct;
+    manager->critical_deviation_pct = critical_deviation_pct;
 }
 
 void flow_manager_set_baseline(flow_manager_t *manager, uint32_t baseline_lpm_x100)
@@ -63,19 +77,20 @@ bool flow_manager_update_measurement(flow_manager_t *manager,
     manager->pulse_count_total = measurement->pulse_count_total;
     manager->measurement_valid = true;
 
-    if (manager->baseline_lpm_x100 == 0) {
+    if (manager->baseline_lpm_x100 == 0 || manager->warning_deviation_pct == 0 ||
+        manager->critical_deviation_pct == 0) {
         return true;
     }
 
     uint32_t deviation = abs_diff_u32(manager->current_lpm_x100, manager->baseline_lpm_x100);
     uint32_t deviation_pct_x100 = (deviation * 10000U) / manager->baseline_lpm_x100;
 
-    if (deviation_pct_x100 >= 3000U) {
+    if (deviation_pct_x100 >= (uint32_t)manager->critical_deviation_pct * 100u) {
         alarm_manager_raise(alarm_manager, ZIC_ALARM_LEAK_DETECTED, ZIC_ALARM_CRITICAL);
         return true;
     }
 
-    if (deviation_pct_x100 >= 1500U) {
+    if (deviation_pct_x100 >= (uint32_t)manager->warning_deviation_pct * 100u) {
         alarm_manager_raise(alarm_manager, ZIC_ALARM_HIGH_FLOW, ZIC_ALARM_WARNING);
         return true;
     }

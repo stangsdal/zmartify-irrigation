@@ -12,6 +12,7 @@ static void test_flow_deviation_thresholds(void)
     alarm_manager_init(&alarms);
     flow_manager_init(&flow);
     flow_manager_set_baseline(&flow, 1000);
+    flow_manager_set_deviation_limits(&flow, 15, 30);
 
     flow_manager_update(&flow, 1160, &alarms);
     assert(alarm_manager_is_active(&alarms, ZIC_ALARM_HIGH_FLOW));

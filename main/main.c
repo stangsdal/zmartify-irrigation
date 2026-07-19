@@ -1000,10 +1000,7 @@ static void zic_mqtt_on_message(const char *topic,
 
 static void zic_runtime_init_context(zic_app_context_t *ctx)
 {
-    uint32_t baseline_flow = 1234;
-
     persistent_store_init();
-    persistent_store_get_u32("flow_baseline", &baseline_flow, 1234);
 
     irrigation_engine_init(&ctx->engine);
     alarm_manager_init(&ctx->alarm_manager);
@@ -1016,13 +1013,14 @@ static void zic_runtime_init_context(zic_app_context_t *ctx)
                           alarm_config.pressure_high_mbar);
     ctx->pressure_supervision.low_pressure_mbar = alarm_config.pressure_low_mbar;
     ctx->pressure_supervision.high_pressure_mbar = alarm_config.pressure_high_mbar;
-    ctx->pressure_supervision.critical_duration_ms = 5000;
+    ctx->pressure_supervision.critical_duration_ms =
+        (uint32_t)alarm_config.pressure_critical_duration_s * 1000u;
     ctx->flow_supervision.low_flow_lpm_x100 = (uint32_t)alarm_config.flow_low_lpm_x10 * 10u;
     ctx->flow_supervision.high_flow_lpm_x100 = (uint32_t)alarm_config.flow_high_lpm_x10 * 10u;
     ctx->flow_supervision.no_flow_timeout_ms = alarm_config.no_flow_timeout_s * 1000u;
     ctx->flow_supervision.high_flow_duration_ms = alarm_config.high_flow_duration_s * 1000u;
-    ctx->flow_supervision.active_max_age_ms = 1500;
-    ctx->flow_supervision.idle_max_age_ms = 5000;
+    ctx->flow_supervision.active_max_age_ms = alarm_config.flow_active_max_age_ms;
+    ctx->flow_supervision.idle_max_age_ms = alarm_config.flow_idle_max_age_ms;
     storage_manager_init(&ctx->storage_manager, s_log_buffer, ZIC_LOG_PERSIST_CAPACITY);
     storage_manager_set_persistence(&ctx->storage_manager, zic_log_load, zic_log_save, NULL);
     if (!storage_manager_restore(&ctx->storage_manager)) {
@@ -1030,7 +1028,6 @@ static void zic_runtime_init_context(zic_app_context_t *ctx)
     }
     storage_manager_append(&ctx->storage_manager, zic_log_timestamp(), ZIC_LOG_AUDIT,
                            "controller boot");
-    flow_manager_set_baseline(&ctx->flow_manager, baseline_flow);
     weather_manager_init(&ctx->weather_manager);
     weather_manager_set_persistence(&ctx->weather_manager,
                                     zic_weather_load, zic_weather_save, NULL);
@@ -1122,6 +1119,26 @@ static bool zic_runtime_start_zone(zic_app_context_t *ctx,
         runtime_seconds = system.global_max_runtime_s;
     }
 
+    uint32_t baseline_lpm_x100 = (uint32_t)zone.flow_baseline_lpm_x10 * 10u;
+    uint32_t critical_delta =
+        (baseline_lpm_x100 * zone.flow_critical_deviation_pct) / 100u;
+    uint32_t zone_low_flow = baseline_lpm_x100 - critical_delta;
+    uint32_t zone_high_flow = baseline_lpm_x100 + critical_delta;
+    config_alarms_t alarms;
+    if (config_get_alarms(&alarms) == CFG_OK) {
+        uint32_t absolute_low = (uint32_t)alarms.flow_low_lpm_x10 * 10u;
+        uint32_t absolute_high = (uint32_t)alarms.flow_high_lpm_x10 * 10u;
+        ctx->flow_supervision.low_flow_lpm_x100 =
+            zone_low_flow > absolute_low ? zone_low_flow : absolute_low;
+        ctx->flow_supervision.high_flow_lpm_x100 =
+            zone_high_flow < absolute_high ? zone_high_flow : absolute_high;
+    }
+    flow_manager_set_baseline(&ctx->flow_manager, baseline_lpm_x100);
+    flow_manager_set_deviation_limits(&ctx->flow_manager,
+                                      zone.flow_warning_deviation_pct,
+                                      zone.flow_critical_deviation_pct);
+    ctx->pressure_supervision.low_pressure_mbar = zone.pressure_min_mbar;
+    ctx->pressure_supervision.high_pressure_mbar = zone.pressure_max_mbar;
     if (!irrigation_engine_start_zone(&ctx->engine, zone_id, zone.relay_index,
                                       runtime_seconds,
                                       (uint64_t)(esp_timer_get_time() / 1000))) {

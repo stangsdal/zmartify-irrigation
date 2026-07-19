@@ -30,6 +30,8 @@ typedef struct {
     uint64_t low_flow_since_ms;
     uint64_t high_flow_since_ms;
     uint64_t unexpected_flow_since_ms;
+    uint8_t warning_deviation_pct;
+    uint8_t critical_deviation_pct;
 } flow_manager_t;
 
 typedef struct {
@@ -43,6 +45,9 @@ typedef struct {
 
 void flow_manager_init(flow_manager_t *manager);
 void flow_manager_set_baseline(flow_manager_t *manager, uint32_t baseline_lpm_x100);
+void flow_manager_set_deviation_limits(flow_manager_t *manager,
+                                       uint8_t warning_deviation_pct,
+                                       uint8_t critical_deviation_pct);
 void flow_manager_update(flow_manager_t *manager,
                          uint32_t current_lpm_x100,
                          alarm_manager_t *alarm_manager);

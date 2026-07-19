@@ -20,6 +20,13 @@ target_include_directories(test_safety_rules PRIVATE
     ../components/flow_manager/include
     ../components/pressure_manager/include)
 
+zic_add_host_test(test_config_validation
+    test_config_validation.c
+    ../components/config_manager/src/config_validation.c)
+target_include_directories(test_config_validation PRIVATE
+    ../components/config_manager/include)
+target_link_libraries(test_config_validation PRIVATE m)
+
 zic_add_host_test(test_irrigation_engine
     test_irrigation_engine.c
     ../components/irrigation_engine/src/irrigation_engine.c

@@ -87,9 +87,9 @@ The MEP reuses `UI-001..005` for two different requirement sets. This RTM uses o
 | ID | Condensed requirement | Status | Implementation evidence | Verification evidence | Plan step |
 |---|---|---|---|---|---|
 | FR-HYD-001 | Continuous active flow measurement, resolution better than 0.1 L/min | `Partial` | WaterSensor snapshots consumed by [watersensor_client.c](../components/watersensor_client/src/watersensor_client.c) | Protocol test; measurement resolution/calibration not verified | 10 |
-| FR-HYD-002 | Continuous active pressure measurement detecting +/-0.1 bar deviations | `Partial` | ADS1115 pressure path and [pressure_manager.c](../components/pressure_manager/src/pressure_manager.c) | Logic thresholds tested; physical resolution/calibration absent | 4 |
+| FR-HYD-002 | Continuous active pressure measurement detecting +/-0.1 bar deviations | `Partial` | ADS1115 pressure path, schema-v2 calibration and per-zone bounds in [config_types.h](../components/config_manager/include/config_types.h), and [pressure_manager.c](../components/pressure_manager/src/pressure_manager.c) | [Configuration boundary/migration tests](../test/test_config_validation.c) and safety rules pass; physical resolution/calibration absent | 4 |
 | FR-HYD-003 | Learn per-zone average/min/max/stddev flow | `Missing` | Baseline comparison exists; statistical learning model does not | No learning test | 5 |
-| FR-HYD-004 | Excess unexpected flow raises critical alarm, stops, logs and publishes | `Partial` | Timed high-flow supervision and critical shutdown | Safety rules test; MQTT and physical fault injection incomplete | 5 |
+| FR-HYD-004 | Excess unexpected flow raises critical alarm, stops, logs and publishes | `Partial` | Configurable per-zone baseline/deviation supervision with global absolute clamp and critical shutdown | [Configuration tests](../test/test_config_validation.c) and safety rules pass; MQTT and physical fault injection incomplete | 5 |
 | FR-HYD-005 | Pressure loss raises hydraulic fault and safely terminates irrigation | `Implemented` | Pressure collapse escalation and critical shutdown | Safety rules and cross-component acceptance test | - |
 | FR-WEA-001 | Accept local temperature, humidity, wind, rain, solar and UV data | `Implemented` | Provider-neutral `/weather` snapshot and cache | Weather validation/cache tests | - |
 | FR-WEA-002 | Optionally retrieve Internet forecast from pluggable providers | `Partial` | Provider-neutral ingestion boundary only | No controller-side provider/poll test | 7 |
@@ -308,7 +308,7 @@ The principal release blockers are:
 
 1. unauthenticated HTTP control and OTA endpoints;
 2. OTA rollback bootloader provisioning and physical failure/interruption evidence;
-3. hardcoded/uncommissioned safety parameters;
+3. installed per-zone hydraulic commissioning and physical threshold/fault-injection evidence;
 4. missing physical valve/relay response diagnostics;
 5. disconnected/inaccurate system diagnostics;
 6. incomplete MQTT schema, QoS, replay and outcome contract;

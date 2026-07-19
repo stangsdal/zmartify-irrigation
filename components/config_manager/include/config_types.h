@@ -7,6 +7,7 @@
  *
  * Schema version history:
  *   1  – v5.0 initial schema
+ *   2  – configurable hydraulic supervision timing and freshness
  *
  * Architecture ref: MEP v5.0 Volume 2, Chapter 14
  */
@@ -18,7 +19,7 @@
 
 /* ─── Schema & limits ────────────────────────────────────────────────── */
 
-#define CONFIG_SCHEMA_VERSION    1       /**< Increment on incompatible changes */
+#define CONFIG_SCHEMA_VERSION    2       /**< Increment on incompatible changes */
 #define CONFIG_MAGIC             0x5A49  /**< 'ZI' – used as header sanity check */
 
 #define CONFIG_MAX_ZONES         15      /**< Relays 1-15 are irrigation zones */
@@ -115,9 +116,11 @@ typedef struct
     uint16_t             flow_baseline_lpm_x10;        /**< Expected L/min × 10 */
     uint16_t             pressure_min_mbar;            /**< Min acceptable pressure */
     uint16_t             pressure_max_mbar;            /**< Max acceptable pressure */
+    uint8_t              flow_warning_deviation_pct;   /**< Warning deviation from baseline */
+    uint8_t              flow_critical_deviation_pct;  /**< Critical deviation from baseline */
     uint8_t              seasonal_factor_pct;          /**< 0–200 %, 100 = nominal */
     uint8_t              et_crop_coefficient_x100;     /**< Kc × 100, e.g. 80 = 0.80 */
-    uint8_t              _reserved[6];
+    uint8_t              _reserved[4];
 } config_zone_t;
 
 /* ─── Program start time ──────────────────────────────────────────────── */
@@ -214,9 +217,11 @@ typedef struct
     uint16_t flow_low_lpm_x10;           /**< Low flow (valve fault) alarm */
     uint32_t no_flow_timeout_s;          /**< No-flow timeout when valve open */
     uint32_t high_flow_duration_s;       /**< Duration before high-flow triggers alarm */
+    uint16_t pressure_critical_duration_s; /**< Sustained pressure fault escalation */
+    uint16_t flow_active_max_age_ms;      /**< Maximum flow age while irrigating */
+    uint16_t flow_idle_max_age_ms;        /**< Maximum flow age while idle */
     uint8_t  cabinet_warn_temp_c;        /**< Cabinet temperature warning */
     uint8_t  cabinet_crit_temp_c;        /**< Cabinet temperature critical */
-    uint8_t  _reserved[6];
 } config_alarms_t;
 
 /* ─── Top-level configuration database ────────────────────────────────── */

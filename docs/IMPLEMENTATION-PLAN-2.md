@@ -176,6 +176,50 @@ auditable configuration.
 - Boundary, migration and failure-path tests cover all safety fields.
 - Commissioned values are verified on the installed hydraulic system.
 
+**Implementation and verification (2026-07-20):**
+
+- Configuration schema v2 owns all active hydraulic supervision values. Schema v1 is migrated
+  in place and immediately persisted; corrupt, incompatible or unsafe blobs use factory defaults.
+- Runtime and commit paths validate calibration, threshold ordering, timing/freshness bounds,
+  runtime limits, per-zone deviation limits and the effective zone/global flow envelope.
+- Zone commissioning records observed stable flow and a pressure envelope of +/-20 percent via
+  `config_commission_zone()`. The change is auditable in the configuration log and is not durable
+  until normal configuration commit succeeds.
+- Runtime applies the active zone's baseline, deviation percentages and pressure envelope at zone
+  start. Global absolute flow limits remain a final safety clamp.
+- Host tests cover boundaries, invalid cross-field combinations, commissioning and schema-v1
+  migration. The signed ESP-IDF image builds successfully.
+- The signed image was OTA-deployed to the ESP32-S3 at `192.168.10.113`; the automatic health
+  gate recorded `ota image confirmed valid`, and the read-only log service remained available.
+
+**Hydraulic safety inventory and schema-v2 defaults:**
+
+| Parameter | Default | Accepted range / relation |
+|---|---:|---|
+| Pressure calibration slope | 400.0 mV/bar | finite and positive |
+| Pressure calibration offset | 500.0 mV | finite and non-negative |
+| Global pressure limits | 0.5-7.0 bar | low < high, high <= 10.0 bar |
+| Zone pressure envelope | 1.0-5.0 bar | low < high, high <= 10.0 bar |
+| Pressure critical duration | 5 s | 1-300 s |
+| Global flow limits | 2.0-200.0 L/min | low < high, high <= 200.0 L/min |
+| Zone flow baseline | 12.0 L/min | 0.1-200.0 L/min |
+| Flow warning/critical deviation | 15% / 30% | 0 < warning < critical <= 100% |
+| No-flow/high-flow duration | 30 s / 10 s | 1-3600 s / 1-300 s |
+| Active/idle flow freshness | 1500 / 5000 ms | active 100-10000 ms; idle >= active and <= 60000 ms |
+| Zone/global maximum runtime | 3600 / 7200 s | positive; default <= zone max <= global max |
+
+**Commissioning procedure:**
+
+1. Confirm valve mapping, leak-free pipework, WaterSensor availability and calibrated pressure input.
+2. Start one zone under controlled observation and wait for stable flow and pressure.
+3. Record the stable observations through `config_commission_zone()` and review the old/new log.
+4. Commit configuration, restart the zone and verify warning/critical behaviour using bounded
+   hydraulic fault injection.
+5. Repeat for every enabled zone; retain the results as SAT evidence.
+
+Physical commissioning remains pending because the current device reports WaterSensor offline and
+ADS1115 pressure unavailable. No valves were activated solely for this implementation step.
+
 **Commit:** `Plan 2 Step 4: Externalize hydraulic safety configuration`
 
 ---
@@ -356,7 +400,7 @@ For each step:
 | 1. Living RTM | Complete | `Plan 2 Step 1: Establish MEP requirements traceability` |
 | 2. HTTP authentication | Not started | - |
 | 3. OTA trust and rollback | Signed OTA and automatic rollback hardware-verified; power-interruption FAT pending | `Plan 2 Step 3: Enforce trusted OTA and rollback` |
-| 4. Hydraulic safety configuration | Not started | - |
+| 4. Hydraulic safety configuration | Firmware complete; installed hydraulic commissioning pending | `Plan 2 Step 4: Externalize hydraulic safety configuration` |
 | 5. Relay and valve diagnostics | Not started | - |
 | 6. Integrated diagnostics | Not started | - |
 | 7. MQTT compliance | Not started | - |

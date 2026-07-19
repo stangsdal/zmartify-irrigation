@@ -11,6 +11,7 @@
  */
 
 #include "config_manager.h"
+#include "config_validation.h"
 #include "hal.h"
 #include "event_bus.h"
 #include "esp_log.h"
@@ -30,6 +31,7 @@ static zic_config_t     s_config;
 static SemaphoreHandle_t s_lock       = NULL;
 static bool              s_initialized = false;
 static bool              s_dirty       = false;
+static bool              s_migrated    = false;
 
 /* ─── CRC helpers ───────────────────────────────────────────────────── */
 
@@ -85,6 +87,9 @@ static void apply_factory_defaults(zic_config_t *cfg)
     cfg->alarms.flow_low_lpm_x10          = 20;     /* 2 L/min when open */
     cfg->alarms.no_flow_timeout_s         = 30;
     cfg->alarms.high_flow_duration_s      = 10;
+    cfg->alarms.pressure_critical_duration_s = 5;
+    cfg->alarms.flow_active_max_age_ms    = 1500;
+    cfg->alarms.flow_idle_max_age_ms      = 5000;
     cfg->alarms.cabinet_warn_temp_c       = 45;
     cfg->alarms.cabinet_crit_temp_c       = 55;
 
@@ -103,6 +108,8 @@ static void apply_factory_defaults(zic_config_t *cfg)
         cfg->zones[i].flow_baseline_lpm_x10    = 120;  /* 12.0 L/min */
         cfg->zones[i].pressure_min_mbar        = 1000; /* 1.0 bar */
         cfg->zones[i].pressure_max_mbar        = 5000; /* 5.0 bar */
+        cfg->zones[i].flow_warning_deviation_pct = 15;
+        cfg->zones[i].flow_critical_deviation_pct = 30;
         cfg->zones[i].seasonal_factor_pct      = 100;
         cfg->zones[i].et_crop_coefficient_x100 = 80;   /* Kc = 0.80 lawn */
     }
@@ -152,12 +159,26 @@ static cfg_result_t load_from_nvs(void)
         return CFG_CRC_ERROR;
     }
 
-    /* Schema version check */
-    if (s_config.schema_version != CONFIG_SCHEMA_VERSION)
+    if (s_config.schema_version == 1u)
     {
-        ESP_LOGW(TAG, "Config schema %u, current %u – migration not yet supported, resetting",
+        if (!config_migrate_v1(&s_config))
+        {
+            return CFG_VERSION_MISMATCH;
+        }
+        s_migrated = true;
+        ESP_LOGI(TAG, "Config migrated from schema v1 to v%u", CONFIG_SCHEMA_VERSION);
+    }
+    else if (s_config.schema_version != CONFIG_SCHEMA_VERSION)
+    {
+        ESP_LOGW(TAG, "Config schema %u, current %u – resetting",
                  s_config.schema_version, CONFIG_SCHEMA_VERSION);
         return CFG_VERSION_MISMATCH;
+    }
+
+    if (!config_validate_safety(&s_config))
+    {
+        ESP_LOGW(TAG, "Config safety validation failed – resetting");
+        return CFG_VALIDATION_ERROR;
     }
 
     ESP_LOGI(TAG, "Config loaded from NVS (schema v%u, CRC OK)", s_config.schema_version);
@@ -206,6 +227,15 @@ cfg_result_t config_manager_init(void)
         save_to_nvs();
         ESP_LOGI(TAG, "Factory defaults applied and committed");
     }
+    else if (s_migrated)
+    {
+        r = save_to_nvs();
+        if (r != CFG_OK)
+        {
+            return r;
+        }
+        ESP_LOGI(TAG, "Migrated configuration committed");
+    }
 
     s_dirty       = false;
     s_initialized = true;
@@ -221,6 +251,12 @@ cfg_result_t config_manager_commit(void)
     }
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (!config_validate_safety(&s_config))
+    {
+        xSemaphoreGive(s_lock);
+        ESP_LOGW(TAG, "Config commit rejected by safety validation");
+        return CFG_VALIDATION_ERROR;
+    }
     cfg_result_t r = save_to_nvs();
     if (r == CFG_OK)
     {
@@ -288,6 +324,16 @@ cfg_result_t config_set_system(const config_system_t *in)
         return CFG_NOT_INITIALIZED;
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    zic_config_t candidate = s_config;
+    candidate.system = *in;
+    if (!config_validate_safety(&candidate))
+    {
+        xSemaphoreGive(s_lock);
+        return CFG_VALIDATION_ERROR;
+    }
+    ESP_LOGI(TAG, "System safety changed: max_runtime_s %lu -> %lu",
+             (unsigned long)s_config.system.global_max_runtime_s,
+             (unsigned long)in->global_max_runtime_s);
     memcpy(&s_config.system, in, sizeof(config_system_t));
     s_dirty = true;
     xSemaphoreGive(s_lock);
@@ -341,7 +387,16 @@ cfg_result_t config_set_hydraulics(const config_hydraulic_t *in)
     {
         return CFG_NOT_INITIALIZED;
     }
+    if (!config_validate_hydraulics(in))
+    {
+        return CFG_VALIDATION_ERROR;
+    }
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    ESP_LOGI(TAG, "Hydraulic calibration changed: pressure_mv_per_bar %.2f -> %.2f, offset_mv %.2f -> %.2f",
+             (double)s_config.hydraulics.pressure_mv_per_bar,
+             (double)in->pressure_mv_per_bar,
+             (double)s_config.hydraulics.pressure_offset_mv,
+             (double)in->pressure_offset_mv);
     memcpy(&s_config.hydraulics, in, sizeof(config_hydraulic_t));
     s_dirty = true;
     xSemaphoreGive(s_lock);
@@ -369,6 +424,18 @@ cfg_result_t config_set_alarms(const config_alarms_t *in)
         return CFG_NOT_INITIALIZED;
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    zic_config_t candidate = s_config;
+    candidate.alarms = *in;
+    if (!config_validate_safety(&candidate))
+    {
+        xSemaphoreGive(s_lock);
+        return CFG_VALIDATION_ERROR;
+    }
+    ESP_LOGI(TAG, "Hydraulic alarms changed: flow %u-%u -> %u-%u x0.1 L/min, pressure %u-%u -> %u-%u mbar",
+             s_config.alarms.flow_low_lpm_x10, s_config.alarms.flow_high_lpm_x10,
+             in->flow_low_lpm_x10, in->flow_high_lpm_x10,
+             s_config.alarms.pressure_low_mbar, s_config.alarms.pressure_high_mbar,
+             in->pressure_low_mbar, in->pressure_high_mbar);
     memcpy(&s_config.alarms, in, sizeof(config_alarms_t));
     s_dirty = true;
     xSemaphoreGive(s_lock);
@@ -403,20 +470,66 @@ cfg_result_t config_set_zone(uint8_t zone_index, const config_zone_t *in)
     {
         return CFG_ZONE_INVALID;
     }
-    /* Validation */
-    if (in->relay_index == 0 || in->relay_index > CONFIG_MAX_ZONES)
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    zic_config_t candidate = s_config;
+    candidate.zones[zone_index] = *in;
+    if (!config_validate_safety(&candidate))
     {
-        ESP_LOGW(TAG, "Zone %u: invalid relay_index %u", zone_index, in->relay_index);
+        xSemaphoreGive(s_lock);
+        ESP_LOGW(TAG, "Zone %u: invalid safety configuration", zone_index);
         return CFG_VALIDATION_ERROR;
     }
-    if (in->max_runtime_s < in->default_runtime_s)
+    ESP_LOGI(TAG, "Zone %u safety changed: flow %u -> %u x0.1 L/min, pressure %u-%u -> %u-%u mbar",
+             zone_index + 1,
+             s_config.zones[zone_index].flow_baseline_lpm_x10,
+             in->flow_baseline_lpm_x10,
+             s_config.zones[zone_index].pressure_min_mbar,
+             s_config.zones[zone_index].pressure_max_mbar,
+             in->pressure_min_mbar, in->pressure_max_mbar);
+    memcpy(&s_config.zones[zone_index], in, sizeof(config_zone_t));
+    s_dirty = true;
+    xSemaphoreGive(s_lock);
+    return CFG_OK;
+}
+
+cfg_result_t config_commission_zone(uint8_t zone_index,
+                                    uint16_t observed_flow_lpm_x10,
+                                    uint16_t observed_pressure_mbar)
+{
+    if (!s_initialized)
     {
-        ESP_LOGW(TAG, "Zone %u: max_runtime < default_runtime", zone_index);
-        return CFG_VALIDATION_ERROR;
+        return CFG_NOT_INITIALIZED;
+    }
+    if (zone_index >= CONFIG_MAX_ZONES)
+    {
+        return CFG_ZONE_INVALID;
     }
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    memcpy(&s_config.zones[zone_index], in, sizeof(config_zone_t));
+    config_zone_t candidate = s_config.zones[zone_index];
+    if (!config_apply_zone_commissioning(&candidate, observed_flow_lpm_x10,
+                                         observed_pressure_mbar) ||
+        !config_validate_zone_safety(&candidate, &s_config.system))
+    {
+        xSemaphoreGive(s_lock);
+        return CFG_VALIDATION_ERROR;
+    }
+    zic_config_t candidate_config = s_config;
+    candidate_config.zones[zone_index] = candidate;
+    if (!config_validate_safety(&candidate_config))
+    {
+        xSemaphoreGive(s_lock);
+        return CFG_VALIDATION_ERROR;
+    }
+
+    ESP_LOGI(TAG, "Zone %u commissioned: flow %u -> %u x0.1 L/min, pressure %u-%u -> %u-%u mbar",
+             zone_index + 1,
+             s_config.zones[zone_index].flow_baseline_lpm_x10,
+             candidate.flow_baseline_lpm_x10,
+             s_config.zones[zone_index].pressure_min_mbar,
+             s_config.zones[zone_index].pressure_max_mbar,
+             candidate.pressure_min_mbar, candidate.pressure_max_mbar);
+    s_config.zones[zone_index] = candidate;
     s_dirty = true;
     xSemaphoreGive(s_lock);
     return CFG_OK;
