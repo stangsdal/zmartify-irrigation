@@ -2,6 +2,9 @@
 
 This plan maps the v3.0 specification into incremental development steps.
 
+This plan is complete. Product maturation against the full Master Engineering Package v5.0
+continues in [Implementation Plan 2](IMPLEMENTATION-PLAN-2.md).
+
 1. Bootstrap repository, ESP-IDF structure, and coding standards.
 2. Implement shared core domain model and state machines.
 3. Implement MQTT topic and payload contract layer.
