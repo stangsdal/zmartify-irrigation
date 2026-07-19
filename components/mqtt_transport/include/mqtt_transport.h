@@ -5,13 +5,20 @@
 #include <stdint.h>
 
 #include "mqtt_client.h"
-#include "mqtt_topic.h"
+
+typedef enum {
+    MQTT_TRANSPORT_QOS_TELEMETRY = 0,
+    MQTT_TRANSPORT_QOS_STATE = 1,
+    MQTT_TRANSPORT_QOS_COMMAND = 1,
+    MQTT_TRANSPORT_QOS_CRITICAL = 2,
+} mqtt_transport_qos_t;
 
 typedef void (*mqtt_transport_message_cb_t)(const char *topic,
                                             size_t topic_len,
                                             const char *payload,
                                             size_t payload_len,
                                             void *user_ctx);
+typedef void (*mqtt_transport_connected_cb_t)(void *user_ctx);
 
 typedef struct {
     const char *broker_uri;
@@ -19,9 +26,12 @@ typedef struct {
     const char *username;
     const char *password;
     bool use_crt_bundle;
+    const char *last_will_topic;
+    const char *last_will_message;
     const char **subscribe_topics;
     size_t subscribe_topic_count;
     mqtt_transport_message_cb_t on_message;
+    mqtt_transport_connected_cb_t on_connected;
     void *user_ctx;
 } mqtt_transport_config_t;
 
@@ -31,6 +41,7 @@ typedef struct {
     const char **subscribe_topics;
     size_t subscribe_topic_count;
     mqtt_transport_message_cb_t on_message;
+    mqtt_transport_connected_cb_t on_connected;
     void *user_ctx;
 } mqtt_transport_t;
 

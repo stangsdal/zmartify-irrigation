@@ -24,7 +24,6 @@
 #include "flow_manager.h"
 #include "hal.h"
 #include "irrigation_engine.h"
-#include "mqtt_topic.h"
 #include "mqtt_transport.h"
 #include "ota_manager.h"
 #include "persistent_store.h"
@@ -89,6 +88,7 @@ typedef struct {
     uint8_t zone_id;
     uint32_t runtime_seconds;
     uint16_t rain_delay_hours;
+    char command_id[ZIC_V2_COMMAND_ID_MAX];
     char ota_url[160];
 } zic_runtime_command_t;
 
@@ -103,8 +103,8 @@ typedef struct {
     weather_manager_t weather_manager;
     weather_decision_t weather_decision;
     et_output_t et_output;
-    char state_topic[ZIC_MQTT_TOPIC_MAX];
     mqtt_transport_t mqtt_transport;
+    bool mqtt_commands_authorized;
     bool scheduled_program_active;
     uint8_t scheduled_program_index;
     uint8_t scheduled_next_zone_index;
@@ -132,20 +132,33 @@ static TaskHandle_t s_telemetry_task_handle;
 static TaskHandle_t s_watersensor_task_handle;
 
 static const char *s_command_topics[] = {
-    ZIC_MQTT_ROOT "/command/start_zone",
-    ZIC_MQTT_ROOT "/command/stop_zone",
-    ZIC_MQTT_ROOT "/command/run_program",
-    ZIC_MQTT_ROOT "/command/stop_all",
-    ZIC_MQTT_ROOT "/command/rain_delay",
-    ZIC_MQTT_ROOT "/command/ota",
     "zmartify/v2/devices/" ZIC_V2_DEVICE_ID "/commands/irrigation/#",
 };
 
 static char s_v2_state_topic[128];
 static char s_v2_outcome_topic[128];
 static char s_diagnostics_topic[128];
-static char s_v2_last_command_id[40];
+static char s_v2_status_topic[128];
+static zic_v2_command_tracker_t s_v2_command_tracker;
 static httpd_handle_t s_ota_http_server;
+
+static void zic_publish_v2_outcome(zic_app_context_t *ctx,
+                                   const char *correlation_id,
+                                   const char *event_type,
+                                   const char *severity,
+                                   const char *result,
+                                   const char *detail,
+                                   int zone_id);
+
+static void zic_mqtt_on_connected(void *user_ctx)
+{
+    zic_app_context_t *ctx = user_ctx;
+    if (ctx != NULL) {
+        (void)mqtt_transport_publish(&ctx->mqtt_transport, s_v2_status_topic,
+                                     "{\"status\":\"online\"}",
+                                     MQTT_TRANSPORT_QOS_STATE, true);
+    }
+}
 
 static uint32_t zic_log_timestamp(void)
 {
@@ -791,26 +804,6 @@ static size_t zic_copy_to_cstr(char *dst, size_t dst_len, const char *src, size_
     return len;
 }
 
-static bool zic_parse_u32_payload(const char *payload, size_t payload_len, uint32_t *value_out)
-{
-    char buf[32];
-    char *end;
-    unsigned long v;
-
-    if (value_out == NULL || payload == NULL || payload_len == 0) {
-        return false;
-    }
-
-    zic_copy_to_cstr(buf, sizeof(buf), payload, payload_len);
-    v = strtoul(buf, &end, 10);
-    if (end == buf) {
-        return false;
-    }
-
-    *value_out = (uint32_t)v;
-    return true;
-}
-
 static bool zic_uri_uses_tls(const char *uri)
 {
     return uri != NULL && strncmp(uri, "mqtts://", strlen("mqtts://")) == 0;
@@ -838,11 +831,34 @@ static bool zic_get_json_u32(const cJSON *root, const char *key, uint32_t *value
     }
 
     item = cJSON_GetObjectItemCaseSensitive(root, key);
-    if (!cJSON_IsNumber(item) || item->valuedouble < 0) {
+    if (!cJSON_IsNumber(item) || item->valuedouble < 0 || item->valuedouble > UINT32_MAX) {
         return false;
     }
 
     *value_out = (uint32_t)item->valuedouble;
+    return item->valuedouble == (double)*value_out;
+}
+
+static bool zic_json_has_only(const cJSON *object,
+                              const char *const *allowed,
+                              size_t allowed_count)
+{
+    if (!cJSON_IsObject(object) || (size_t)cJSON_GetArraySize(object) != allowed_count) {
+        return false;
+    }
+    const cJSON *item = NULL;
+    cJSON_ArrayForEach(item, object) {
+        bool found = false;
+        for (size_t index = 0; index < allowed_count; ++index) {
+            if (item->string != NULL && strcmp(item->string, allowed[index]) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -853,15 +869,15 @@ static void zic_mqtt_on_message(const char *topic,
                                 void *user_ctx)
 {
     zic_runtime_command_t cmd;
-    zic_mqtt_command_t mqtt_cmd;
     uint32_t value;
     uint32_t runtime_seconds;
-    char topic_buf[ZIC_MQTT_TOPIC_MAX];
+    char topic_buf[128];
     char json_scratch[256];
     cJSON *json = NULL;
 
     (void)user_ctx;
-    if (s_command_queue == NULL || topic == NULL) {
+    if (s_command_queue == NULL || topic == NULL || topic_len >= sizeof(topic_buf) ||
+        payload_len >= sizeof(json_scratch)) {
         return;
     }
 
@@ -870,188 +886,109 @@ static void zic_mqtt_on_message(const char *topic,
     runtime_seconds = 300;
     zic_copy_to_cstr(topic_buf, sizeof(topic_buf), topic, topic_len);
 
-    if (strcmp(topic_buf, ZIC_MQTT_ROOT "/command/ota") == 0) {
-        json = zic_parse_json_payload(payload, payload_len, json_scratch, sizeof(json_scratch));
-        if (json == NULL) {
-            ESP_LOGW(TAG, "Invalid OTA command payload");
-            return;
-        }
-
-        const cJSON *url = cJSON_GetObjectItemCaseSensitive(json, "url");
-        if (cJSON_IsString(url) && url->valuestring != NULL && url->valuestring[0] != '\0') {
-            cmd.type = ZIC_CMD_TRIGGER_OTA;
-            strncpy(cmd.ota_url, url->valuestring, sizeof(cmd.ota_url) - 1U);
-            cmd.ota_url[sizeof(cmd.ota_url) - 1U] = '\0';
-            (void)xQueueSend(s_command_queue, &cmd, 0);
-        } else {
-            ESP_LOGW(TAG, "OTA command requires a non-empty url");
-        }
-        cJSON_Delete(json);
-        return;
-    }
-
-    /* Zmartify v2 command envelope: route by trailing segment and unwrap
-     * command_id + parameters before dispatching to the same command queue. */
+    /* Zmartify v2 is the sole active command contract. */
     const char *v2_prefix = "zmartify/v2/devices/" ZIC_V2_DEVICE_ID "/commands/irrigation/";
     if (strncmp(topic_buf, v2_prefix, strlen(v2_prefix)) == 0) {
         const char *action = topic_buf + strlen(v2_prefix);
         json = zic_parse_json_payload(payload, payload_len, json_scratch, sizeof(json_scratch));
-        if (json == NULL) {
+        if (!cJSON_IsObject(json)) {
             ESP_LOGW(TAG, "Invalid v2 command payload for %s", action);
+            cJSON_Delete(json);
+            zic_publish_v2_outcome(&s_ctx, NULL, "command.rejected", "warning",
+                                   "rejected", "invalid_json", 0);
             return;
         }
 
         const cJSON *command_id = cJSON_GetObjectItemCaseSensitive(json, "command_id");
-        if (cJSON_IsString(command_id) && command_id->valuestring != NULL) {
-            strncpy(s_v2_last_command_id, command_id->valuestring, sizeof(s_v2_last_command_id) - 1U);
-            s_v2_last_command_id[sizeof(s_v2_last_command_id) - 1U] = '\0';
-        }
-
+        const cJSON *source_timestamp = cJSON_GetObjectItemCaseSensitive(json, "source_timestamp");
         const cJSON *parameters = cJSON_GetObjectItemCaseSensitive(json, "parameters");
-        const cJSON *scope = cJSON_IsObject(parameters) ? parameters : json;
+        zic_v2_command_t v2_command = {
+            .authorized = s_ctx.mqtt_commands_authorized,
+        };
+        if (cJSON_IsString(command_id) && command_id->valuestring != NULL &&
+            strlen(command_id->valuestring) < sizeof(v2_command.command_id)) {
+            strncpy(v2_command.command_id, command_id->valuestring,
+                    sizeof(v2_command.command_id) - 1u);
+        }
+        if (cJSON_IsString(source_timestamp) && source_timestamp->valuestring != NULL) {
+            (void)zic_v2_parse_utc_timestamp(source_timestamp->valuestring,
+                                             &v2_command.source_epoch_s);
+        }
 
-        bool queued = false;
-        if (strcmp(action, "zone/start") == 0 || strcmp(action, "start_zone") == 0) {
-            if (zic_get_json_u32(scope, "zone_id", &value) && value >= 1 && value <= ZIC_MAX_ZONES) {
-                cmd.type = ZIC_CMD_START_ZONE;
-                cmd.zone_id = (uint8_t)value;
-                cmd.runtime_seconds = 300;
-                if (zic_get_json_u32(scope, "duration_seconds", &runtime_seconds) ||
-                    zic_get_json_u32(scope, "runtime_seconds", &runtime_seconds)) {
-                    cmd.runtime_seconds = runtime_seconds;
-                }
-                queued = true;
-            }
-        } else if (strcmp(action, "zone/stop") == 0 || strcmp(action, "stop_zone") == 0) {
-            if (zic_get_json_u32(scope, "zone_id", &value) && value >= 1 && value <= ZIC_MAX_ZONES) {
-                cmd.type = ZIC_CMD_STOP_ZONE;
-                cmd.zone_id = (uint8_t)value;
-                queued = true;
-            }
+        static const char *const envelope_fields[] = {
+            "command_id", "source_timestamp", "parameters"
+        };
+        bool schema_valid = zic_json_has_only(json, envelope_fields,
+                                              sizeof(envelope_fields) / sizeof(envelope_fields[0]));
+        if (strcmp(action, "zone/start") == 0) {
+            static const char *const fields[] = {"zone_id", "duration_seconds"};
+            v2_command.action = ZIC_V2_ACTION_ZONE_START;
+            schema_valid = schema_valid && zic_json_has_only(parameters, fields, 2u) &&
+                zic_get_json_u32(parameters, "zone_id", &value) &&
+                zic_get_json_u32(parameters, "duration_seconds", &runtime_seconds);
+            v2_command.zone_id = value;
+            v2_command.runtime_seconds = runtime_seconds;
+            cmd.type = ZIC_CMD_START_ZONE;
+            cmd.zone_id = (uint8_t)value;
+            cmd.runtime_seconds = runtime_seconds;
+        } else if (strcmp(action, "zone/stop") == 0) {
+            static const char *const fields[] = {"zone_id"};
+            v2_command.action = ZIC_V2_ACTION_ZONE_STOP;
+            schema_valid = schema_valid && zic_json_has_only(parameters, fields, 1u) &&
+                zic_get_json_u32(parameters, "zone_id", &value);
+            v2_command.zone_id = value;
+            cmd.type = ZIC_CMD_STOP_ZONE;
+            cmd.zone_id = (uint8_t)value;
         } else if (strcmp(action, "stop_all") == 0) {
+            v2_command.action = ZIC_V2_ACTION_STOP_ALL;
+            schema_valid = schema_valid && zic_json_has_only(parameters, NULL, 0u);
             cmd.type = ZIC_CMD_STOP_ALL;
-            queued = true;
         } else if (strcmp(action, "rain_delay") == 0) {
-            if (zic_get_json_u32(scope, "delay_hours", &value) || zic_get_json_u32(scope, "hours", &value)) {
-                if (value == 0) {
-                    cmd.type = ZIC_CMD_CLEAR_RAIN_DELAY;
-                } else {
-                    cmd.type = ZIC_CMD_SET_RAIN_DELAY;
-                    cmd.rain_delay_hours = (uint16_t)value;
-                }
-                queued = true;
-            }
-        }
-
-        cJSON_Delete(json);
-        if (queued) {
-            xQueueSend(s_command_queue, &cmd, 0);
-        } else {
-            ESP_LOGW(TAG, "Unsupported or invalid v2 command: %s", action);
-        }
-        return;
-    }
-
-    if (!zic_mqtt_command_from_topic(topic_buf, &mqtt_cmd)) {
-        return;
-    }
-
-    switch (mqtt_cmd) {
-    case ZIC_MQTT_CMD_START_ZONE:
-        if (!zic_parse_u32_payload(payload, payload_len, &value)) {
-            json = zic_parse_json_payload(payload, payload_len, json_scratch, sizeof(json_scratch));
-            if (json == NULL) {
-                ESP_LOGW(TAG, "Invalid start_zone payload");
-                return;
-            }
-
-            if (!zic_get_json_u32(json, "zone", &value) && !zic_get_json_u32(json, "zone_id", &value)) {
-                cJSON_Delete(json);
-                ESP_LOGW(TAG, "start_zone requires zone or zone_id");
-                return;
-            }
-
-            if (zic_get_json_u32(json, "runtime_seconds", &runtime_seconds) ||
-                zic_get_json_u32(json, "runtime", &runtime_seconds)) {
-                cmd.runtime_seconds = runtime_seconds;
-            }
-
-            cJSON_Delete(json);
-        }
-
-        if (value == 0 || value > ZIC_MAX_ZONES) {
-            ESP_LOGW(TAG, "start_zone zone out of range: %lu", (unsigned long)value);
-            return;
-        }
-
-        cmd.type = ZIC_CMD_START_ZONE;
-        cmd.zone_id = (uint8_t)value;
-        if (cmd.runtime_seconds == 0) {
-            cmd.runtime_seconds = 300;
-        }
-        break;
-
-    case ZIC_MQTT_CMD_STOP_ZONE:
-        if (!zic_parse_u32_payload(payload, payload_len, &value)) {
-            json = zic_parse_json_payload(payload, payload_len, json_scratch, sizeof(json_scratch));
-            if (json == NULL) {
-                ESP_LOGW(TAG, "Invalid stop_zone payload");
-                return;
-            }
-
-            if (!zic_get_json_u32(json, "zone", &value) && !zic_get_json_u32(json, "zone_id", &value)) {
-                cJSON_Delete(json);
-                ESP_LOGW(TAG, "stop_zone requires zone or zone_id");
-                return;
-            }
-            cJSON_Delete(json);
-        }
-
-        if (value == 0 || value > ZIC_MAX_ZONES) {
-            ESP_LOGW(TAG, "stop_zone zone out of range: %lu", (unsigned long)value);
-            return;
-        }
-
-        cmd.type = ZIC_CMD_STOP_ZONE;
-        cmd.zone_id = (uint8_t)value;
-        break;
-
-    case ZIC_MQTT_CMD_STOP_ALL:
-        cmd.type = ZIC_CMD_STOP_ALL;
-        break;
-
-    case ZIC_MQTT_CMD_RAIN_DELAY:
-        if (!zic_parse_u32_payload(payload, payload_len, &value)) {
-            json = zic_parse_json_payload(payload, payload_len, json_scratch, sizeof(json_scratch));
-            if (json == NULL) {
-                ESP_LOGW(TAG, "Invalid rain_delay payload");
-                return;
-            }
-
-            if (!zic_get_json_u32(json, "hours", &value) &&
-                !zic_get_json_u32(json, "rain_delay_hours", &value)) {
-                cJSON_Delete(json);
-                ESP_LOGW(TAG, "rain_delay requires hours or rain_delay_hours");
-                return;
-            }
-            cJSON_Delete(json);
-        }
-
-        if (value == 0) {
-            cmd.type = ZIC_CMD_CLEAR_RAIN_DELAY;
-        } else {
-            cmd.type = ZIC_CMD_SET_RAIN_DELAY;
+            static const char *const fields[] = {"delay_hours"};
+            v2_command.action = ZIC_V2_ACTION_RAIN_DELAY;
+            schema_valid = schema_valid && zic_json_has_only(parameters, fields, 1u) &&
+                zic_get_json_u32(parameters, "delay_hours", &value);
+            v2_command.rain_delay_hours = value;
+            cmd.type = value == 0u ? ZIC_CMD_CLEAR_RAIN_DELAY : ZIC_CMD_SET_RAIN_DELAY;
             cmd.rain_delay_hours = (uint16_t)value;
+        } else {
+            schema_valid = false;
         }
-        break;
 
-    case ZIC_MQTT_CMD_RUN_PROGRAM:
-        return;
-    default:
+        uint32_t now_epoch_s = 0;
+        (void)hal_time_get_epoch(&now_epoch_s);
+        zic_v2_command_reason_t reason = ZIC_V2_REASON_INVALID_TIMESTAMP;
+        zic_v2_command_decision_t decision = schema_valid
+            ? zic_v2_validate_command(&v2_command, now_epoch_s,
+                                      &s_v2_command_tracker, &reason)
+            : ZIC_V2_COMMAND_REJECTED;
+        if (!schema_valid) {
+            reason = ZIC_V2_REASON_INVALID_TIMESTAMP;
+        }
+        strncpy(cmd.command_id, v2_command.command_id, sizeof(cmd.command_id) - 1u);
+        cJSON_Delete(json);
+
+        if (decision == ZIC_V2_COMMAND_DUPLICATE) {
+            zic_publish_v2_outcome(&s_ctx, v2_command.command_id, "command.duplicate",
+                                   "warning", "duplicate", "already_processed", 0);
+            return;
+        }
+        if (decision == ZIC_V2_COMMAND_REJECTED) {
+            zic_publish_v2_outcome(&s_ctx, v2_command.command_id, "command.rejected",
+                                   "warning", "rejected",
+                                   schema_valid ? zic_v2_command_reason_name(reason) : "invalid_schema", 0);
+            return;
+        }
+        if (xQueueSend(s_command_queue, &cmd, 0) != pdTRUE) {
+            zic_publish_v2_outcome(&s_ctx, v2_command.command_id, "command.rejected",
+                                   "warning", "rejected", "queue_full", 0);
+            return;
+        }
+        zic_publish_v2_outcome(&s_ctx, v2_command.command_id, "command.accepted",
+                               "info", "accepted", NULL, 0);
         return;
     }
 
-    xQueueSend(s_command_queue, &cmd, 0);
 }
 
 static void zic_runtime_init_context(zic_app_context_t *ctx)
@@ -1099,11 +1036,12 @@ static void zic_runtime_init_context(zic_app_context_t *ctx)
     if (!weather_manager_restore(&ctx->weather_manager)) {
         ESP_LOGI(TAG, "No valid cached weather snapshot found");
     }
-    zic_mqtt_topic_build("state", ctx->state_topic, sizeof(ctx->state_topic));
     zic_v2_state_topic(ZIC_V2_DEVICE_ID, s_v2_state_topic, sizeof(s_v2_state_topic));
     zic_v2_outcome_topic(ZIC_V2_DEVICE_ID, s_v2_outcome_topic, sizeof(s_v2_outcome_topic));
     snprintf(s_diagnostics_topic, sizeof(s_diagnostics_topic),
              "zmartify/v2/devices/%s/diagnostics/health", ZIC_V2_DEVICE_ID);
+    snprintf(s_v2_status_topic, sizeof(s_v2_status_topic),
+             "zmartify/v2/devices/%s/status", ZIC_V2_DEVICE_ID);
 
     config_network_t network_config = {0};
     const bool has_network_config = config_get_network(&network_config) == CFG_OK;
@@ -1116,6 +1054,8 @@ static void zic_runtime_init_context(zic_app_context_t *ctx)
     const char *password = (has_network_config && network_config.mqtt_password[0] != '\0')
         ? network_config.mqtt_password
         : NULL;
+    ctx->mqtt_commands_authorized = zic_uri_uses_tls(broker_uri) &&
+        username != NULL && password != NULL;
 
     mqtt_transport_config_t mqtt_cfg = {
         .broker_uri = broker_uri,
@@ -1123,10 +1063,13 @@ static void zic_runtime_init_context(zic_app_context_t *ctx)
         .username = username,
         .password = password,
         .use_crt_bundle = (has_network_config && network_config.mqtt_tls_enabled) || zic_uri_uses_tls(broker_uri),
+        .last_will_topic = s_v2_status_topic,
+        .last_will_message = "{\"status\":\"offline\"}",
         .subscribe_topics = s_command_topics,
         .subscribe_topic_count = sizeof(s_command_topics) / sizeof(s_command_topics[0]),
         .on_message = zic_mqtt_on_message,
-        .user_ctx = NULL,
+        .on_connected = zic_mqtt_on_connected,
+        .user_ctx = ctx,
     };
     if (mqtt_transport_init(&ctx->mqtt_transport, &mqtt_cfg)) {
         mqtt_transport_start(&ctx->mqtt_transport);
@@ -1134,6 +1077,7 @@ static void zic_runtime_init_context(zic_app_context_t *ctx)
 }
 
 static void zic_publish_v2_outcome(zic_app_context_t *ctx,
+                                   const char *correlation_id,
                                    const char *event_type,
                                    const char *severity,
                                    const char *result,
@@ -1149,11 +1093,13 @@ static void zic_publish_v2_outcome(zic_app_context_t *ctx,
 
     zic_v2_now_iso(stamp, sizeof(stamp));
     if (!zic_v2_build_outcome(payload, sizeof(payload), stamp, event_type, severity, result, detail,
-                              s_v2_last_command_id[0] != '\0' ? s_v2_last_command_id : NULL,
+                              correlation_id,
                               NULL, zone_id)) {
         return;
     }
-    (void)mqtt_transport_publish(&ctx->mqtt_transport, s_v2_outcome_topic, payload, 1, false);
+    int qos = severity != NULL && strcmp(severity, "critical") == 0
+        ? MQTT_TRANSPORT_QOS_CRITICAL : MQTT_TRANSPORT_QOS_STATE;
+    (void)mqtt_transport_publish(&ctx->mqtt_transport, s_v2_outcome_topic, payload, qos, false);
 }
 
 static bool zic_runtime_start_zone(zic_app_context_t *ctx,
@@ -1221,9 +1167,9 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
     switch (cmd->type) {
     case ZIC_CMD_START_ZONE: {
         if (zic_runtime_start_zone(ctx, cmd->zone_id, cmd->runtime_seconds)) {
-            zic_publish_v2_outcome(ctx, "run.started", "info", "accepted", NULL, cmd->zone_id);
+            zic_publish_v2_outcome(ctx, cmd->command_id, "run.started", "info", "completed", NULL, cmd->zone_id);
         } else {
-            zic_publish_v2_outcome(ctx, "run.rejected", "warning", "rejected",
+            zic_publish_v2_outcome(ctx, cmd->command_id, "run.rejected", "warning", "rejected",
                                    "controller_not_idle", cmd->zone_id);
         }
         break;
@@ -1235,9 +1181,9 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
                                             (uint64_t)(esp_timer_get_time() / 1000));
             storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
                            ZIC_LOG_IRRIGATION, "zone stopped by command");
-            zic_publish_v2_outcome(ctx, "run.stopped", "info", "completed", NULL, cmd->zone_id);
+            zic_publish_v2_outcome(ctx, cmd->command_id, "run.stopped", "info", "completed", NULL, cmd->zone_id);
         } else {
-            zic_publish_v2_outcome(ctx, "run.stop_rejected", "warning", "rejected",
+            zic_publish_v2_outcome(ctx, cmd->command_id, "run.stop_rejected", "warning", "rejected",
                                    "zone_not_active", cmd->zone_id);
         }
         break;
@@ -1250,7 +1196,7 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
         irrigation_engine_stop_all(&ctx->engine);
         storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
                        ZIC_LOG_AUDIT, "all irrigation stopped by command");
-        zic_publish_v2_outcome(ctx, "run.stopped", "info", "completed", "stop_all", 0);
+        zic_publish_v2_outcome(ctx, cmd->command_id, "run.stopped", "info", "completed", "stop_all", 0);
         break;
     case ZIC_CMD_SET_RAIN_DELAY:
         ctx->scheduled_program_active = false;
@@ -1263,14 +1209,14 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
         zic_controller_apply_event(&ctx->engine.controller, ZIC_EV_RAIN_DELAY_SET, -1);
         storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
                        ZIC_LOG_AUDIT, "rain delay set");
-        zic_publish_v2_outcome(ctx, "rain.delay_set", "info", "accepted", NULL, 0);
+        zic_publish_v2_outcome(ctx, cmd->command_id, "rain.delay_set", "info", "completed", NULL, 0);
         break;
     case ZIC_CMD_CLEAR_RAIN_DELAY:
         persistent_store_set_u32("rain_delay_h", 0);
         zic_controller_apply_event(&ctx->engine.controller, ZIC_EV_RAIN_DELAY_CLEAR, -1);
         storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
                        ZIC_LOG_AUDIT, "rain delay cleared");
-        zic_publish_v2_outcome(ctx, "rain.delay_cleared", "info", "accepted", NULL, 0);
+        zic_publish_v2_outcome(ctx, cmd->command_id, "rain.delay_cleared", "info", "completed", NULL, 0);
         break;
     case ZIC_CMD_TRIGGER_OTA: {
         if (cmd->ota_url[0] == '\0' || !irrigation_engine_is_idle(&ctx->engine) ||
@@ -1569,7 +1515,7 @@ static void zic_control_task(void *arg)
                 storage_manager_append(&s_ctx.storage_manager, zic_log_timestamp(), ZIC_LOG_ALARM,
                                        "critical hydraulic shutdown");
                 (void)storage_manager_flush(&s_ctx.storage_manager, zic_log_timestamp());
-                zic_publish_v2_outcome(&s_ctx, "irrigation.fault", "critical", "failed",
+                zic_publish_v2_outcome(&s_ctx, NULL, "irrigation.fault", "critical", "failed",
                                        "hydraulic_safety_shutdown", 0);
             }
             s_ctx.safety_fault_latched = true;
@@ -1643,7 +1589,7 @@ static void zic_telemetry_task(void *arg)
         }
 
         ESP_LOGI(TAG,
-                 "Telemetry controller_state=%d active_zone=%d alarm_high_flow=%d et_daily=%.2f fault=%d mqtt=%d watersensor=%d flow_source=%d logs=%u first_log=%s publish_topic=%s",
+                 "Telemetry controller_state=%d active_zone=%d alarm_high_flow=%d et_daily=%.2f fault=%d mqtt=%d watersensor=%d flow_source=%d logs=%u first_log=%s",
                  (int)s_ctx.engine.controller.state,
                  (int)s_ctx.engine.controller.active_zone,
                  alarm_manager_is_active(&s_ctx.alarm_manager, ZIC_ALARM_HIGH_FLOW),
@@ -1653,16 +1599,9 @@ static void zic_telemetry_task(void *arg)
                  (int)watersensor_state,
                  (int)s_ctx.flow_manager.source,
                  (unsigned)storage_manager_count(&s_ctx.storage_manager),
-                 csv_line,
-                 s_ctx.state_topic);
+                 csv_line);
 
         if (mqtt_transport_is_connected(&s_ctx.mqtt_transport)) {
-            mqtt_transport_publish(&s_ctx.mqtt_transport,
-                                   s_ctx.state_topic,
-                                   csv_line,
-                                   ZIC_MQTT_QOS_TELEMETRY,
-                                   false);
-
             /* Zmartify v2 reported-state (schema mqtt-v2/reported-state). */
             char stamp[32];
             char v2_payload[512];
@@ -1682,8 +1621,8 @@ static void zic_telemetry_task(void *arg)
                 mqtt_transport_publish(&s_ctx.mqtt_transport,
                                        s_v2_state_topic,
                                        v2_payload,
-                                       ZIC_MQTT_QOS_TELEMETRY,
-                                       false);
+                                       MQTT_TRANSPORT_QOS_STATE,
+                                       true);
             }
 
         }

@@ -359,6 +359,43 @@ test was not run against connected valves during this step.
 - Reported state recovers correctly after broker and controller restart.
 - Unsupported Volume 3 interfaces are explicitly marked `Not Applicable` or deferred in RTM.
 
+**Implementation and verification (2026-07-19):**
+
+- The active MQTT ownership path is now `mqtt_transport` for connection/session/QoS,
+  `zic_v2` for contract validation/serialization and `main` for queueing and execution. The legacy
+  `mqtt_manager` and controller-specific command namespace are removed from the runtime dependency
+  graph. The supported topics, schemas and deferred interfaces are defined in
+  [MQTT-V5-CONTRACT.md](MQTT-V5-CONTRACT.md).
+- ESP-MQTT explicitly negotiates MQTT v5. The stable client uses a one-hour session expiry,
+  automatic five-second reconnect, receive maximum 16, 2,048-byte maximum packet size, retained
+  online/offline status with QoS 1 LWT, retained reported state/diagnostics at QoS 1 and critical
+  outcomes at QoS 2.
+- The supported command subset is `zone/start`, `zone/stop`, `stop_all` and `rain_delay`.
+  Commands require a bounded ID, strict UTC timestamp, five-minute freshness, exact integer/range
+  validation and an authenticated `mqtts://` connection with broker credentials before queueing.
+  Unauthenticated local brokers may receive telemetry but cannot actuate irrigation.
+- Each queue element carries its own correlation ID. Successful insertion emits
+  `command.accepted`, execution emits exactly one correlated completed/rejected result, malformed
+  or unauthorized input emits `command.rejected`, and a fixed 16-ID replay ring emits
+  `command.duplicate` without queueing. Persistent replay suppression across controller restart is
+  deferred until a durable command journal is specified.
+- Home Assistant discovery, legacy commands, MQTT configuration mutation, MQTT OTA, program
+  control and generic management commands are outside the current product subset. Signed OTA
+  remains on the controlled HTTP/HTTPS paths.
+- All 13 host tests pass. The MQTT contract test covers UTC parsing, authorization, stale/future
+  timestamps, malformed IDs, integer wraparound/ranges and duplicate suppression. The signed MQTT
+  v5 image builds at `0x151000` bytes with 21 percent app-partition headroom.
+- The MQTT v5 image was OTA-deployed to `192.168.10.113` and recorded
+  `ota image confirmed valid`. The final strict-schema image (SHA-256
+  `6c5d92450bd661aea41a7cd3359e9ee3e7ba7aabf39afcd19bfdc60f1fbc0dda`) was then OTA-deployed;
+  after reboot it reported healthy runtime/storage, 39 percent heap utilization, synchronized
+  time, zero event drops and `ota_acceptable:true`. No valve command was issued. This final boot
+  did not add a new confirmation entry to the bounded audit log, so its rollback-state transition
+  was not independently observed. A local Mosquitto 2.1.2 harness verified retained QoS 1
+  behavior. Full device/broker reconnect, LWT and accepted duplicate sequence remains pending
+  because the device subnet could not route to the temporary broker at `192.168.1.224`; the
+  original `mqtt://192.168.10.2:1883` configuration was restored and verified after the test.
+
 **Commit:** `Plan 2 Step 7: Complete MQTT contract compliance`
 
 ---
@@ -466,7 +503,7 @@ For each step:
 | 4. Hydraulic safety configuration | Firmware complete; installed hydraulic commissioning pending | `Plan 2 Step 4: Externalize hydraulic safety configuration` |
 | 5. Relay and valve diagnostics | Firmware complete; hydraulic fault injection pending | `Plan 2 Step 5: Add relay and valve diagnostics` |
 | 6. Integrated diagnostics | Firmware and device metrics complete; HTTP authentication pending Step 2 | `Plan 2 Step 6: Integrate authoritative system diagnostics` |
-| 7. MQTT compliance | Not started | - |
+| 7. MQTT compliance | Firmware/device complete; routed authenticated broker acceptance pending | `Plan 2 Step 7: Complete MQTT contract compliance` |
 | 8. Config migration and alarm lifecycle | Not started | - |
 | 9. HMI completion | Not started | - |
 | 10. FAT/SAT release gate | Not started | - |

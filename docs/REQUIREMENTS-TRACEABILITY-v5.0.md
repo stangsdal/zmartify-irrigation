@@ -2,7 +2,7 @@
 
 **Project:** Zmartify Irrigation Controller
 **Baseline:** Master Engineering Package (MEP) v5.0 plus active WaterSensor v5.1 addendum
-**RTM version:** 1.2
+**RTM version:** 1.3
 **Created:** 2026-07-19
 **Owner:** Firmware and system engineering
 **Plan:** [Implementation Plan 2](IMPLEMENTATION-PLAN-2.md), Step 1
@@ -72,7 +72,7 @@ The MEP reuses `UI-001..005` for two different requirement sets. This RTM uses o
 | FR-SYS-001 | Continuous operation through irrigation season | `Not Verified` | Runtime architecture and reconnect paths in [main.c](../main/main.c) | Long-term/seasonal test absent | 10 |
 | FR-SYS-002 | Continue safely without Internet/weather services | `Partial` | Local scheduler; cached weather fallback in [weather_manager.c](../components/weather_manager/src/weather_manager.c) | Weather stale fallback host test; device offline soak absent | 10 |
 | FR-SYS-003 | Safe startup, self-test, idle; never resume watering after power loss | `Partial` | Startup initializes managers and engine enters idle in [main.c](../main/main.c) | State-machine test; complete hardware self-test absent | 10 |
-| FR-SYS-004 | Critical fault stops irrigation, closes master, logs and publishes alarm | `Partial` | Critical latch and stop path in [main.c](../main/main.c) | [Safety shutdown acceptance](../test/test_acceptance_safety_shutdown.c); immediate MQTT alarm not contract-tested | 7 |
+| FR-SYS-004 | Critical fault stops irrigation, closes master, logs and publishes alarm | `Partial` | Critical latch/stop plus MQTT v5 critical outcome at QoS 2 | [Safety shutdown acceptance](../test/test_acceptance_safety_shutdown.c); physical timed broker delivery remains pending | 10 |
 | FR-IRR-001 | 15 zones plus one dedicated master valve | `Implemented` | Mapping in [relay_manager.h](../components/relay_manager/include/relay_manager.h) | [Irrigation engine test](../test/test_irrigation_engine.c) and relay script | - |
 | FR-IRR-002 | Zone custom name, icon, colour and type | `Partial` | Name/config fields in [config_types.h](../components/config_manager/include/config_types.h) | Icon/colour/type coverage absent | 9 |
 | FR-IRR-003 | Independently enabled zones never auto-run when disabled | `Implemented` | Scheduler checks zone enabled state in [main.c](../main/main.c) | Host scheduler-specific test still desirable | 10 |
@@ -104,10 +104,10 @@ The MEP reuses `UI-001..005` for two different requirement sets. This RTM uses o
 | FR-UI-002 | Backlight off after 10 minutes; touch/button wakes immediately | `Partial` | Backlight and touch HAL exist | Timeout/wake acceptance absent | 9 |
 | FR-UI-003 | Home/Wake, Manual Start, Stop and Emergency Stop buttons | `Missing` | Current hardware path is touch-centric; no four-button runtime contract | No test | 9 |
 | FR-UI-004 | English and Danish with extensible translations | `Missing` | Hardcoded display text | No i18n test | 9 |
-| FR-MQTT-001 | Publish operational state | `Partial` | State publication in [main.c](../main/main.c) | Broker contract/reconnect test absent | 7 |
-| FR-MQTT-002 | Publish alarms immediately | `Partial` | Outcome/alarm publication paths exist | One-second delivery and QoS not verified | 7 |
-| FR-MQTT-003 | Publish flow, pressure, consumption, weather and zone telemetry | `Partial` | Several v2 payloads exist | Full topic/schema compliance absent | 7 |
-| FR-MQTT-004 | Subscribe to commands, configuration and OTA requests | `Partial` | Command/OTA subscriptions exist; configuration coverage incomplete | Broker contract tests absent | 7 |
+| FR-MQTT-001 | Publish operational state | `Implemented` | Retained schema-v2 state, diagnostics and online/LWT status use the documented MQTT v5 policy | [MQTT v5 contract](MQTT-V5-CONTRACT.md); signed device image verified, routed broker restart test pending | - |
+| FR-MQTT-002 | Publish alarms immediately | `Partial` | Critical outcomes use QoS 2 through the single active transport | One-second physical broker delivery remains unmeasured | 10 |
+| FR-MQTT-003 | Publish flow, pressure, consumption, weather and zone telemetry | `Partial` | Supported v2 state reports hydraulics/weather; consumption and zone detail remain outside current payload | [MQTT v5 contract](MQTT-V5-CONTRACT.md) | 9, 10 |
+| FR-MQTT-004 | Subscribe to commands, configuration and OTA requests | `Partial` | Authenticated validated irrigation subset implemented; MQTT configuration/OTA deliberately deferred to controlled interfaces | [MQTT contract host test](../test/test_mqtt_v2_contract.c) and [broker test](../test/test_mqtt_broker_contract.sh) | 2, 10 |
 | FR-ALM-001 | Information, warning and critical categories | `Implemented` | Severity model in [alarm_manager.h](../components/alarm_manager/include/alarm_manager.h) | Safety rules tests | - |
 | FR-ALM-002 | Required critical catalog includes hydraulic, master, watchdog and emergency faults | `Partial` | Hydraulic codes exist | Master/watchdog/emergency catalog and injection tests incomplete | 8 |
 | FR-ALM-003 | Critical alarms remain active until acknowledged | `Missing` | No acknowledged/resolved/cleared lifecycle | No lifecycle test | 8 |
@@ -115,7 +115,7 @@ The MEP reuses `UI-001..005` for two different requirement sets. This RTM uses o
 | FR-LOG-002 | Entry contains timestamp, source, event, severity and additional data | `Partial` | Current schema has timestamp, type and message | Schema lacks explicit source/severity/structured data | 6 |
 | FR-PER-001 | Boot within 30 seconds | `Not Verified` | Boot path exists | Measured cold-boot report absent | 10 |
 | FR-PER-002 | Touch response below 100 ms | `Not Verified` | Touch/LVGL runtime exists | Instrumented latency test absent | 9 |
-| FR-PER-003 | MQTT alarm publication within 1 second | `Not Verified` | Alarm publication path exists | Timed broker integration test absent | 7 |
+| FR-PER-003 | MQTT alarm publication within 1 second | `Not Verified` | Critical QoS 2 path exists | Timed routed broker integration test pending | 10 |
 | FR-PER-004 | Flow updates every second or faster | `Not Verified` | Online WaterSensor poll target is 500 ms | Device timing/age evidence absent | 10 |
 | FR-MNT-001 | Support OTA firmware updates | `Partial` | Signed direct and HTTPS command-triggered OTA paths with explicit states | Signature rejection automated; signed healthy OTA and automatic unhealthy-image rollback verified on ESP32-S3; power-interruption FAT pending | 3, 10 |
 | FR-MNT-002 | Export complete controller configuration | `Missing` | Log export is not configuration export | No round-trip test | 8 |
@@ -221,14 +221,14 @@ destination. Each source ID is written explicitly to permit machine coverage che
 | Volume 1, Chapter 9 irrigation | SYS-IRR-001, SYS-IRR-002, SYS-IRR-003, SYS-IRR-004, SYS-IRR-005, SYS-IRR-006 | `Partial` | Core manual/automatic control exists; full program/cycle/soak scope and field proof incomplete | 4, 9, 10 |
 | Volume 1, Chapter 9 hydraulic | SYS-HYD-001, SYS-HYD-002, SYS-HYD-003, SYS-HYD-004, SYS-HYD-005 | `Partial` | Flow/pressure supervision exists; learning, calibration and physical fault evidence incomplete | 4, 5, 10 |
 | Volume 1, Chapter 9 weather | SYS-WEA-001, SYS-WEA-002, SYS-WEA-003 | `Partial` | Weather cache and ET policy exist; provider and site verification incomplete | 7, 10 |
-| Volume 1, Chapter 9 MQTT | SYS-MQTT-001, SYS-MQTT-002, SYS-MQTT-003, SYS-MQTT-004, SYS-MQTT-005 | `Partial` | Live transport/subscriptions exist; schema, QoS, duplicate and recovery contract tests incomplete | 7 |
+| Volume 1, Chapter 9 MQTT | SYS-MQTT-001, SYS-MQTT-002, SYS-MQTT-003, SYS-MQTT-004, SYS-MQTT-005 | `Partial` | MQTT v5 schema/QoS/replay/recovery policy and host tests exist; routed authenticated broker acceptance remains pending | 10 |
 | Volume 1, Chapter 9 storage | SYS-STO-001, SYS-STO-002 | `Partial` | CRC event/weather persistence and live write-health reporting exist; complete retention/capacity requirements not proven | 8, 10 |
 | Volume 2, Chapter 4 HAL | HAL-001, HAL-002, HAL-003, HAL-004, HAL-005, HAL-006 | `Partial` | HAL boundaries exist for active hardware; API and hardware-verification breadth incomplete | 5, 10 |
 | Volume 2, Chapter 7 relay architecture | REL-001, REL-002, REL-003, REL-004, REL-005, REL-006 | `Partial` | Exclusive relay ownership/interlocks and hydraulic response diagnostics exist; installed hardware has no contact/current feedback | 5 |
-| Volume 2, Chapter 13 MQTT architecture | MQTT-001, MQTT-002, MQTT-003, MQTT-004 | `Partial` | MQTT transport and v2 message subset exist; full architectural contract is open | 7 |
+| Volume 2, Chapter 13 MQTT architecture | MQTT-001, MQTT-002, MQTT-003, MQTT-004 | `Implemented` | Single transport owns MQTT v5 session/QoS; zic_v2 owns the documented schema/validation subset | [MQTT v5 contract](MQTT-V5-CONTRACT.md) and [host contract test](../test/test_mqtt_v2_contract.c) | - |
 | Volume 2/3 security architecture | SEC-001, SEC-002, SEC-003, SEC-004, SEC-005, SEC-006 | `Partial` | Signed OTA and MQTT TLS exist; HTTP auth, authorization, replay controls, hardware secure boot and flash encryption remain open | 2, 3, 7 |
-| Volume 3, Chapter 1 communications | COM-001, COM-002, COM-003, COM-004, COM-005 | `Partial` | MQTT-first integration exists; reliability/security/compliance evidence incomplete | 7 |
-| Volume 3, Chapter 20 API compliance | API-001, API-002, API-003, API-004, API-005, API-006, API-007, API-008, API-009, API-010 | `Partial` | Supported subset is not yet closed by a broker-backed compliance matrix | 7 |
+| Volume 3, Chapter 1 communications | COM-001, COM-002, COM-003, COM-004, COM-005 | `Partial` | Explicit MQTT v5 subset, TLS authorization gate and recovery policy implemented; routed broker acceptance pending | 10 |
+| Volume 3, Chapter 20 API compliance | API-001, API-002, API-003, API-004, API-005, API-006, API-007, API-008, API-009, API-010 | `Partial` | Supported subset and exclusions are documented; full broker acceptance matrix remains pending | [MQTT v5 contract](MQTT-V5-CONTRACT.md), 10 |
 | Volume 4, Chapter 1 HMI principles | HMI-001, HMI-002, HMI-003, HMI-004, HMI-005 | `Partial` | Operational LVGL UI exists; full service/safety/usability evidence incomplete | 9 |
 | Volume 4, Chapter 3 UX/navigation | UX-001, UX-002, UX-003, UX-004 | `Partial` | Multi-screen navigation exists; hierarchy and workflow acceptance are not measured | 9 |
 | Volume 4, Chapter 8 configuration UI | CFG-001, CFG-002, CFG-003, CFG-004 | `Partial` | Configuration model exists; protected complete local administration workflow is incomplete | 2, 9 |
@@ -246,7 +246,7 @@ through the following stable chapter-level keys until the source documents assig
 
 | Tracking key | Normative domain | Applicability/status | Current evidence or gap | Plan step |
 |---|---|---|---|---|
-| MEP-V1-C5-ARCH | Layering, fail-safe architecture and subsystem ownership | `Partial` | Diagnostics owns health policy; remaining ownership drift is concentrated in main/MQTT | 7 |
+| MEP-V1-C5-ARCH | Layering, fail-safe architecture and subsystem ownership | `Partial` | Diagnostics and MQTT ownership are explicit; remaining main orchestration breadth is tracked for release review | 10 |
 | MEP-V1-C7-SW | ESP-IDF, coding, task, storage and software baseline | `Partial` | Build and modules exist; several architecture promises incomplete | 6, 8 |
 | MEP-V1-C8-CONOPS | Auto/manual/service/fault operation and recovery | `Partial` | Auto/manual/fault paths exist; service mode incomplete | 9 |
 | MEP-V1-C9-PERF | Availability, timing, storage, sensor, network and reliability targets | `Not Verified` | No consolidated performance/endurance evidence | 10 |
@@ -261,14 +261,14 @@ through the following stable chapter-level keys until the source documents assig
 | MEP-V2-C10-FLOW | Learning, anomaly policy and predictive diagnostics | `Partial` | Anomaly supervision exists; learning/predictive diagnostics missing | 5 |
 | MEP-V2-C11-PRESS | Pressure acquisition, baseline, faults and diagnostics | `Partial` | Fault supervision exists; baseline learning/calibration incomplete | 4, 5 |
 | MEP-V2-C12-ALARM | Full alarm model, lifecycle, actions and history | `Partial` | Severity/active state exists; acknowledge/resolve lifecycle missing | 8 |
-| MEP-V2-C13-MQTT | TLS, topics, QoS, validation, reconnect and discovery | `Partial` | TLS transport/commands exist; full contract tests and discovery incomplete | 7 |
+| MEP-V2-C13-MQTT | TLS, topics, QoS, validation, reconnect and discovery | `Partial` | MQTT v5 TLS/topic/QoS/validation/reconnect subset implemented; Home Assistant discovery not in product scope and routed broker acceptance pending | [MQTT v5 contract](MQTT-V5-CONTRACT.md), 10 |
 | MEP-V2-C14-CONFIG | Versioned schema, validation, migration and audit events | `Partial` | CRC/version/config exists; migration resets instead of converting | 4, 8 |
 | MEP-V2-C15-STORAGE | Typed persistent data, retention, integrity and diagnostics | `Partial` | Event/weather persistence and write-health diagnostics exist; full data model/backups incomplete | 8 |
 | MEP-V2-C16-OTA | Trusted download, validation, health confirmation and rollback | `Partial` | RSA-signed updates, HTTPS remote policy, live health confirmation, rollback guard and persistent audit integrated | Physical rollback, interruption and production-key FAT pending | 3, 10 |
 | MEP-V2-C17-DIAG | Authoritative system health, task/resource/event/sensor metrics | `Implemented` | Live managers feed tested health policy; bounded HTTP/MQTT snapshot and OTA gate expose heap, task, event, alarm, sensor, communication and storage state | [Diagnostics policy tests](../test/test_diagnostics_policy.c); signed ESP32-S3 OTA and live `/health` metrics verified 2026-07-19 | - |
 | MEP-V2-C19-SEC | Authentication, authorization, TLS, secure boot and flash encryption | `Missing` | MQTT TLS exists; HTTP auth, secure boot and flash encryption absent | 2, 3 |
-| MEP-V3-MQTT-API | Namespace, schemas, transaction outcomes, QoS and integrations | `Partial` | v2 subset exists; compliance matrix and broker tests absent | 7 |
-| MEP-V3-C18-SEC | MQTT/API authentication, authorization and hardening | `Partial` | Credentials/TLS available; role enforcement/replay protection incomplete | 2, 7 |
+| MEP-V3-MQTT-API | Namespace, schemas, transaction outcomes, QoS and integrations | `Partial` | Supported v2 subset has deterministic correlated outcomes and host coverage; routed broker acceptance remains pending | [MQTT v5 contract](MQTT-V5-CONTRACT.md), 10 |
+| MEP-V3-C18-SEC | MQTT/API authentication, authorization and hardening | `Partial` | Commands require TLS plus credentials and use bounded replay suppression; broker ACL proof and durable restart replay journal remain open | 2, 10 |
 | MEP-V3-C19-REST | Future full REST/WebSocket API | `Not Applicable` | Explicit future interface, excluded from current baseline | - |
 | MEP-V4-HMI | Screens, navigation, themes, i18n, service and data binding | `Partial` | Working LVGL UI; architecture and workflow breadth incomplete | 9 |
 | MEP-V4-C17-VV | Automated GUI validation and performance evidence | `Missing` | No active GUI automation | 9 |

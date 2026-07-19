@@ -39,6 +39,12 @@ zic_add_host_test(test_diagnostics_policy
 target_include_directories(test_diagnostics_policy PRIVATE
     ../components/diagnostics_manager/include)
 
+zic_add_host_test(test_mqtt_v2_contract
+    test_mqtt_v2_contract.c
+    ../components/zic_v2/src/zic_v2.c)
+target_include_directories(test_mqtt_v2_contract PRIVATE
+    ../components/zic_v2/include)
+
 zic_add_host_test(test_irrigation_engine
     test_irrigation_engine.c
     ../components/irrigation_engine/src/irrigation_engine.c

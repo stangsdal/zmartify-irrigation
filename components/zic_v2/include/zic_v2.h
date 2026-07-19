@@ -59,6 +59,57 @@ typedef struct {
 } zic_v2_weather_t;
 
 #define ZIC_V2_OMIT (-1000.0)
+#define ZIC_V2_COMMAND_ID_MAX 40u
+#define ZIC_V2_DEDUPE_CAPACITY 16u
+
+typedef enum {
+    ZIC_V2_ACTION_ZONE_START = 0,
+    ZIC_V2_ACTION_ZONE_STOP,
+    ZIC_V2_ACTION_STOP_ALL,
+    ZIC_V2_ACTION_RAIN_DELAY,
+} zic_v2_command_action_t;
+
+typedef enum {
+    ZIC_V2_COMMAND_ACCEPTED = 0,
+    ZIC_V2_COMMAND_REJECTED,
+    ZIC_V2_COMMAND_DUPLICATE,
+} zic_v2_command_decision_t;
+
+typedef enum {
+    ZIC_V2_REASON_NONE = 0,
+    ZIC_V2_REASON_UNAUTHORIZED,
+    ZIC_V2_REASON_INVALID_ID,
+    ZIC_V2_REASON_INVALID_TIMESTAMP,
+    ZIC_V2_REASON_STALE,
+    ZIC_V2_REASON_FUTURE,
+    ZIC_V2_REASON_INVALID_ZONE,
+    ZIC_V2_REASON_INVALID_RUNTIME,
+    ZIC_V2_REASON_INVALID_RAIN_DELAY,
+} zic_v2_command_reason_t;
+
+typedef struct {
+    char command_id[ZIC_V2_COMMAND_ID_MAX];
+    bool authorized;
+    uint32_t source_epoch_s;
+    zic_v2_command_action_t action;
+    uint32_t zone_id;
+    uint32_t runtime_seconds;
+    uint32_t rain_delay_hours;
+} zic_v2_command_t;
+
+typedef struct {
+    char command_ids[ZIC_V2_DEDUPE_CAPACITY][ZIC_V2_COMMAND_ID_MAX];
+    uint8_t next_index;
+} zic_v2_command_tracker_t;
+
+bool zic_v2_parse_utc_timestamp(const char *timestamp, uint32_t *epoch_s_out);
+zic_v2_command_decision_t zic_v2_validate_command(
+    const zic_v2_command_t *command,
+    uint32_t now_epoch_s,
+    zic_v2_command_tracker_t *tracker,
+    zic_v2_command_reason_t *reason_out);
+const char *zic_v2_command_decision_name(zic_v2_command_decision_t decision);
+const char *zic_v2_command_reason_name(zic_v2_command_reason_t reason);
 
 /**
  * Build a schema-conformant v2 reported-state payload with irrigation blocks.
