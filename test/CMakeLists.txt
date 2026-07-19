@@ -5,6 +5,9 @@ function(zic_add_host_test target test_source)
     add_test(NAME ${target} COMMAND ${target})
 endfunction()
 
+add_test(NAME test_release_gate_blockers
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/test_release_gate.sh)
+
 zic_add_host_test(test_state_machine
     test_state_machine.c
     ../components/zic_core/src/zic_state_machine.c)

@@ -16,6 +16,8 @@ This folder contains host-side C tests for critical logic.
   protocol-major rejection and malformed lengths.
 - `test_acceptance_safety_shutdown.c` validates the cross-component critical pressure
     fault path: alarm escalation, zone-before-master shutdown and persistent alarm restore.
+- `test_hmi_controller.c` validates local navigation, confirmation and command dispatch policy.
+- `test_release_gate.sh` verifies that open safety/security/FAT/SAT deviations block release.
 
 ## Running Host Tests
 

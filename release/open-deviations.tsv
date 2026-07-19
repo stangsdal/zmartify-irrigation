@@ -1,0 +1,12 @@
+id	status	severity	requirement	evidence_required	disposition
+RTM-CLOSURE	OPEN	BLOCKER	Close defer or formally accept every applicable RTM requirement	Approved RTM with no undispositioned release-critical gaps	Release blocked
+HTTP-AUTH	OPEN	BLOCKER	Authenticate and authorize HTTP OTA/config/weather endpoints	Penetration and authorization tests	Release blocked
+SECURE-BOOT	OPEN	BLOCKER	Provision production Secure Boot and flash encryption	Approved manufacturing instruction and eFuse readback	Release blocked
+FAT-PRODUCTION	OPEN	BLOCKER	Pass FAT on production-equivalent controller	Signed FAT record with equipment serials	Release blocked
+SAT-INSTALLATION	OPEN	BLOCKER	Pass SAT at installed irrigation site	Signed SAT record or approved site deviations	Release blocked
+OTA-POWER-LOSS	OPEN	BLOCKER	Prove bootability across interrupted OTA and power cycles	Serial logs and version evidence for each interruption point	Release blocked
+HYDRAULIC-COMMISSION	OPEN	BLOCKER	Calibrate installed flow and pressure sensors per zone	Commissioning measurements and accepted thresholds	Release blocked
+HYDRAULIC-FAULTS	OPEN	BLOCKER	Inject leak pipe-break restriction and valve-response faults	Observed shutdown alarm and recovery records	Release blocked
+BROKER-ACL	OPEN	BLOCKER	Verify routed authenticated MQTT broker ACLs	Broker-side allow/deny acceptance record	Release blocked
+GUI-PIXEL-REGRESSION	OPEN	DEFERRED	Automate critical-screen pixel regression	Simulator or framebuffer capture harness	Step 10 follow-up; not a field-safety substitute
+LONG-SOAK	OPEN	BLOCKER	Complete controlled endurance and network-loss soak	Duration reset heap event-drop and reconnect report	Release blocked

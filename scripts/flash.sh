@@ -1,14 +1,12 @@
-#!/bin/bash
-# flash.sh - Flash Zmartify Irrigation Controller firmware
+#!/usr/bin/env bash
+# flash.sh - Manufacturing/recovery USB flash for Zmartify Irrigation Controller
 #
-# Usage: ./scripts/flash.sh [method] [port]
-# Methods: usb, ota
+# Usage: ./scripts/flash.sh usb [port]
 # Examples:
 #   ./scripts/flash.sh usb          # Flash via USB (auto-detect port)
 #   ./scripts/flash.sh usb /dev/ttyUSB0
-#   ./scripts/flash.sh ota http://192.168.10.57/ota
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -61,64 +59,26 @@ case "$METHOD" in
         echo ""
         echo "Flashing firmware..."
         
-        idf.py -p "$PORT" -b 921600 flash monitor
+        idf.py -p "$PORT" -b 921600 flash
         ;;
         
     ota)
-        echo "Flashing via OTA..."
-        
-        if [ -z "$PARAM" ]; then
-            echo "Error: OTA URL required"
-            echo "Usage: $0 ota <url>"
-            echo "Example: $0 ota http://192.168.10.57/ota"
-            exit 1
-        fi
-        
-        OTA_URL="$PARAM"
-        FIRMWARE="build/zmartify_irrigation.bin"
-        
-        echo "OTA URL: $OTA_URL"
-        echo "Firmware: $FIRMWARE"
-        echo ""
-        
-        # Extract host and path
-        HOST=$(echo "$OTA_URL" | cut -d'/' -f3)
-        PATH=$(echo "$OTA_URL" | cut -d'/' -f4-)
-        
-        echo "Uploading firmware to $HOST..."
-        
-        # Check if endpoint is available
-        if curl --connect-timeout 2 -s "http://$HOST/" > /dev/null 2>&1; then
-            # Upload firmware
-            curl -X POST \
-                --form "firmware=@$FIRMWARE" \
-                --form "action=update_firmware" \
-                "http://$HOST/ota" \
-                -v
-            
-            echo ""
-            echo "OTA update initiated"
-            echo "Device will reboot and apply update"
-        else
-            echo "Error: Cannot reach OTA endpoint at $OTA_URL"
-            echo "Verify device is online and endpoint is correct"
-            exit 1
-        fi
+        echo "Error: legacy multipart OTA is retired." >&2
+        echo "Follow docs/RELEASE-AND-ROLLBACK.md after the HTTP-AUTH blocker closes." >&2
+        exit 64
         ;;
         
     *)
         echo "Error: Unknown method '$METHOD'"
         echo ""
-        echo "Usage: $0 [method] [param]"
+        echo "Usage: $0 usb [port]"
         echo ""
         echo "Methods:"
         echo "  usb [port]      Flash via USB (auto-detect if no port specified)"
-        echo "  ota <url>       Flash via OTA to specified URL"
         echo ""
         echo "Examples:"
         echo "  $0 usb"
         echo "  $0 usb /dev/ttyUSB0"
-        echo "  $0 ota http://192.168.10.57/ota"
         exit 1
         ;;
 esac

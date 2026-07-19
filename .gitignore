@@ -1,5 +1,7 @@
 build/
 build-host-tests/
+build-host-release/
+build-release/
 build-step3/
 build-ota-rollback-test/
 managed_components/

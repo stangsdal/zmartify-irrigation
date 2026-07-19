@@ -18,3 +18,10 @@ jobs:
         run: cmake --build build-host-tests
       - name: Test
         run: ctest --test-dir build-host-tests --output-on-failure
+      - name: Confirm field release remains blocked
+        run: |
+          set +e
+          ./scripts/release-gate.sh --check-blockers
+          code=$?
+          set -e
+          test "$code" -eq 2

@@ -3,7 +3,7 @@
 **Project:** Zmartify Irrigation Controller
 **Baseline:** Zmartify Master Engineering Package v5.0
 **Hardware:** ESP32-S3, Waveshare 7B display, MCP23017 relay board
-**Plan status:** Active
+**Plan status:** Steps 1-10 implemented; field release BLOCKED pending FAT/SAT and open deviations
 **Created:** 2026-07-19
 
 ## 1. Purpose
@@ -547,6 +547,30 @@ Volume 4 without coupling LVGL directly to valve control.
 - FAT passes on the production-equivalent controller.
 - SAT passes at the installation or open deviations are formally accepted.
 - Release and rollback procedures are documented and rehearsed.
+
+**Implementation and verification (2026-07-19):**
+
+- Added `scripts/release-gate.sh` with distinct software-candidate and field-release dispositions.
+  From a clean checkout, `--software-only` runs the complete host suite, performs a fresh signed
+  ESP32-S3 build, verifies the Secure Boot v2 signature, enforces partition headroom and emits a
+  commit/artifact/security manifest. `--release` additionally requires zero open blockers.
+- Added a machine-readable release deviation register. Every open security, RTM, FAT, SAT,
+  hydraulic, power-loss, broker and soak blocker has a named evidence requirement. CTest and CI
+  verify the register blocks release with exit code 2; the single deferred screenshot-regression
+  item does not substitute for physical HMI acceptance.
+- Defined auditable FAT and SAT protocols in [FAT-PROCEDURE.md](FAT-PROCEDURE.md) and
+  [SAT-PROCEDURE.md](SAT-PROCEDURE.md). They require controller/artifact/configuration identity,
+  calibrated measurements, per-zone and OTA trial matrices, immutable evidence, independent
+  witness and explicit pass/fail. No FAT or SAT execution is claimed by this step.
+- Documented candidate packaging, deployment, automatic rollback and operator rollback in
+  [RELEASE-AND-ROLLBACK.md](RELEASE-AND-ROLLBACK.md). The stale MQTT URL and multipart HTTP OTA
+  scripts now fail closed; USB flash remains a manufacturing/recovery operation and no longer
+  automatically opens a resetting serial monitor.
+- Production authorization remains **BLOCKED**. HTTP authentication/authorization, production
+  Secure Boot/flash-encryption provisioning, complete RTM disposition, production-equivalent FAT,
+  installation SAT, OTA power-interruption evidence, installed hydraulic calibration/fault
+  injection, broker ACL evidence and long soak evidence are open blockers. No valve was activated
+  and no eFuse was provisioned during this documentation/automation step.
 
 **Commit:** `Plan 2 Step 10: Establish FAT and SAT release gate`
 

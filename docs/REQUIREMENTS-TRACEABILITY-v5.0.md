@@ -2,7 +2,7 @@
 
 **Project:** Zmartify Irrigation Controller
 **Baseline:** Master Engineering Package (MEP) v5.0 plus active WaterSensor v5.1 addendum
-**RTM version:** 1.3
+**RTM version:** 1.4
 **Created:** 2026-07-19
 **Owner:** Firmware and system engineering
 **Plan:** [Implementation Plan 2](IMPLEMENTATION-PLAN-2.md), Step 1
@@ -307,12 +307,18 @@ Chapter-level rows are not included in these counts.
 The principal release blockers are:
 
 1. unauthenticated HTTP control and OTA endpoints;
-2. OTA rollback bootloader provisioning and physical failure/interruption evidence;
+2. production Secure Boot/flash-encryption provisioning and physical OTA interruption evidence;
 3. installed per-zone hydraulic commissioning and physical threshold/fault-injection evidence;
 4. pending physical valve-response fault injection and unavailable electrical contact/current feedback;
-5. disconnected/inaccurate system diagnostics;
-6. incomplete MQTT schema, QoS, replay and outcome contract;
-7. no formal FAT/SAT, performance or long-duration evidence.
+5. authenticated routed broker ACL evidence;
+6. unexecuted production-equivalent FAT and installation SAT;
+7. incomplete applicable RTM dispositions plus performance and long-duration evidence.
+
+Step 10 adds an executable two-level release gate, machine-readable blocker register and formal
+[FAT](FAT-PROCEDURE.md), [SAT](SAT-PROCEDURE.md) and
+[release/rollback](RELEASE-AND-ROLLBACK.md) procedures. These are implementation evidence for the
+verification process, not physical acceptance evidence. All RTM statuses and counts therefore
+remain unchanged until the named records exist. Production release is explicitly **BLOCKED**.
 
 ## 14. Update Procedure
 
