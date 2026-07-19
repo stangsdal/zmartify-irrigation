@@ -488,6 +488,38 @@ Volume 4 without coupling LVGL directly to valve control.
 - No screen directly manipulates relay HAL state.
 - Desktop/simulator or device evidence covers navigation and critical dialogs.
 
+**Implementation and verification (2026-07-19):**
+
+- Added a platform-independent `hmi_controller` that owns five-screen navigation, parameter
+  validation, a single protected confirmation state and command dispatch. Repeatable host tests
+  cover navigation, cancellation, invalid values, immediate Stop All and confirmed zone, program,
+  rain-delay and alarm actions.
+- LVGL now renders runtime snapshots instead of placeholder values. Dashboard, irrigation,
+  weather, hydraulics/alarms and settings show live controller, weather, hydraulic, program,
+  connectivity, storage and configuration state. Alarm count or configuration safe mode remains
+  visible in the footer on every screen.
+- Local zone start, enabled-program run, Stop All and rain-delay actions enter the same
+  `zic_runtime_command_t` queue consumed by the control task. LVGL never calls relay HAL or the
+  irrigation engine. Alarm acknowledge/manual-clear runs through the Step 8 alarm manager under
+  the runtime lock; clearing one alarm cannot release another critical lockout.
+- Start zone, run program, rain-delay changes and alarm actions use a blocking confirmation
+  overlay. Stop All remains immediate by safety policy. Credentials and safety thresholds remain
+  outside the unauthenticated HMI surface.
+- The active product baseline is explicitly 1024x600 Waveshare 7B with GT911, English and the
+  light operational theme. The obsolete Volume 5 800x480 profile is marked as superseded. Detailed
+  screen criteria and ownership are defined in [HMI-WORKFLOWS.md](HMI-WORKFLOWS.md).
+- All 15 host tests pass. The signed image (SHA-256
+  `e95faec8e2c910f3fb9d670346992559f4afafb1f4b92b47dd5f81915dd110d7`) builds at `0x151000`
+  with 21 percent partition headroom and was OTA-deployed to `192.168.10.113`. Audit recorded
+  `ota image confirmed valid`; health at 35 seconds showed healthy runtime/storage, 39 percent
+  heap utilization, zero alarms and event drops, synchronized time and `ota_acceptable:true`.
+  A post-confirmation serial boot matched ELF SHA-256 prefix `24e0a1993`, initialized the
+  1024x600 panel, GT911 and LVGL 8.4, loaded schema v3 with CRC OK and remained stable. No valve,
+  irrigation or alarm-transition command was issued during verification.
+- The device build has no framebuffer export or desktop simulator. Controller-level navigation
+  and critical-dialog behavior are automated; physical rendering/touch initialization are
+  device-verified. Screenshot regression remains open for Step 10 and is not overclaimed here.
+
 **Commit:** `Plan 2 Step 9: Complete controller HMI workflows`
 
 ---

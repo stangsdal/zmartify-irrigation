@@ -134,7 +134,7 @@ evidence is linked. Firmware support is noted but does not prove electrical comp
 | HW-003 | Physical/electrical separation of mains, 24 VAC, logic and sensors | `Not Verified` | Requires cabinet/electrical inspection | 10 |
 | HW-004 | Field-replaceable modules | `Not Verified` | Requires mechanical inspection/FAT | 10 |
 | HW-CPU-001 | Waveshare ESP32-S3 7-inch 1024x600 controller | `Not Verified` | Firmware targets ESP32-S3 and 1024x600; approved BOM inspection absent | 10 |
-| HW-CPU-002 | ESP32 owns control, HMI, MQTT, OTA, sensors, events, logs, weather | `Partial` | Runtime performs these roles with integrated diagnostics; HMI scope remains incomplete | 9 |
+| HW-CPU-002 | ESP32 owns control, HMI, MQTT, OTA, sensors, events, logs, weather | `Implemented` | Runtime owns all listed roles; HMI uses bound snapshots and the shared application command queue | 9 |
 | HW-IO-001 | MCP23017 provides 16 I2C outputs | `Implemented` | HAL and relay manager integrated; live relay mapping previously exercised | 10 |
 | HW-IO-002 | Relay 0 master, relay 1-15 zones | `Implemented` | Mapping constants and controlled relay test | 10 |
 | HW-IO-003 | MCP23017 interrupts available for future revisions | `Not Verified` | PCB/pin availability inspection absent | 10 |
@@ -166,7 +166,7 @@ evidence is linked. Firmware support is noted but does not prove electrical comp
 | SAF-003 | Protect irrigation equipment under abnormal operation | `Partial` | Runtime limits and pressure/flow alarms; electrical/power monitoring incomplete | 5 |
 | SAF-004 | Protect users through mains/SELV separation | `Not Verified` | Requires electrical inspection and FAT | 10 |
 | SAF-005 | Preserve complete history after safety incidents | `Partial` | CRC alarm/event persistence; schema/capacity do not prove complete incident history | 6 |
-| SAF-006 | Permit rapid diagnosis and recovery | `Partial` | Live bounded health and logs are available over HTTP/MQTT; authenticated service workflow and complete HMI remain open | 2, 9 |
+| SAF-006 | Permit rapid diagnosis and recovery | `Partial` | Live health/logs and local persistent alarm acknowledge/manual-clear workflows exist; authenticated service workflow remains open | 2, 9 |
 
 ## 8. Firmware Architecture Requirements
 
@@ -190,20 +190,20 @@ The duplicated `UI-001..005` IDs are tracked by occurrence key.
 | Occurrence key | Source ID | Condensed requirement | Status | Evidence or gap | Plan step |
 |---|---|---|---|---|---|
 | UIA-UI-001 | UI-001 | Routine tasks need no more than three touches | `Not Verified` | No navigation acceptance measurements | 9 |
-| UIA-UI-002 | UI-002 | Frequent data visible; configuration accessible without clutter | `Partial` | Dashboard exists; workflow review incomplete | 9 |
+| UIA-UI-002 | UI-002 | Frequent data visible; configuration accessible without clutter | `Partial` | Live dashboard and settings health exist; credential/safety configuration intentionally remains in authenticated service tooling | 9 |
 | UIA-UI-003 | UI-003 | Capacitive-touch-first architecture | `Implemented` | GT911/LVGL touch integration active | 9 |
 | UIA-UI-004 | UI-004 | Screen updates arrive through Event Bus, not module polling | `Partial` | HMI receives runtime data, but strict event-only binding not demonstrated | 9 |
-| UIA-UI-005 | UI-005 | UI never directly drives hardware | `Partial` | Relay HAL ownership is separate; command-path architecture needs formal test | 9 |
+| UIA-UI-005 | UI-005 | UI never directly drives hardware | `Implemented` | Host-tested HMI controller dispatches to main; irrigation actions use the shared runtime queue and no HMI source calls relay HAL | 9 |
 | UID-UI-001 | UI-001 | Identical functions appear consistently | `Not Verified` | Design review/screenshots absent | 9 |
 | UID-UI-002 | UI-002 | Compose screens from reusable widgets | `Partial` | Some shared styles; largely monolithic LVGL file | 9 |
 | UID-UI-003 | UI-003 | Each widget has one responsibility | `Not Verified` | No widget architecture review | 9 |
-| UID-UI-004 | UI-004 | Widgets display data without business logic | `Partial` | Rendering and callbacks coexist in one implementation file | 9 |
-| UID-UI-005 | UI-005 | Widget behaviour is theme-independent | `Missing` | No theme engine/verification | 9 |
-| UIT-TEST-001 | TEST-001 | Every screen has acceptance criteria | `Missing` | No screen acceptance catalogue | 9 |
-| UIT-TEST-002 | TEST-002 | UI tests are repeatable | `Missing` | No active UI test harness | 9 |
-| UIT-TEST-003 | TEST-003 | Automate UI tests wherever practical | `Missing` | CI contains host logic tests only | 9 |
-| UIT-TEST-004 | TEST-004 | Measure graphical performance | `Missing` | No FPS/render/touch instrumentation evidence | 9 |
-| UIT-TEST-005 | TEST-005 | Released UI features remain regression-tested | `Missing` | No screenshot or simulator regression suite | 9 |
+| UID-UI-004 | UI-004 | Widgets display data without business logic | `Partial` | Navigation/confirmation/validation moved to a pure controller; LVGL still owns view-specific selection callbacks | 9 |
+| UID-UI-005 | UI-005 | Widget behaviour is theme-independent | `Not Applicable` | Product scope is English with one light operational theme; theme switching is unsupported | 9 |
+| UIT-TEST-001 | TEST-001 | Every screen has acceptance criteria | `Implemented` | [HMI workflow acceptance catalogue](HMI-WORKFLOWS.md) covers all five screens | 9 |
+| UIT-TEST-002 | TEST-002 | UI tests are repeatable | `Implemented` | `test_hmi_controller` deterministically covers navigation, validation and confirmation behavior | 9 |
+| UIT-TEST-003 | TEST-003 | Automate UI tests wherever practical | `Partial` | Controller behavior is automated; LVGL pixel/simulator automation is unavailable | 9 |
+| UIT-TEST-004 | TEST-004 | Measure graphical performance | `Partial` | On-device render FPS/frame-time instrumentation is visible; benchmark evidence remains open | 9 |
+| UIT-TEST-005 | TEST-005 | Released UI features remain regression-tested | `Partial` | HMI controller behavior is host-regressed; screenshot regression remains open | 9 |
 
 ## 10. Additional Explicit Design, System and Interface IDs
 
@@ -287,7 +287,7 @@ volume/chapter level below; granular explicit IDs are tracked above.
 | Volume 1 - Product/FRS/EDS | Chapters 1-11 | Applicable; Chapter 11 process is implemented by this living RTM. |
 | Volume 2 - Firmware Architecture | Chapters 1-21 | Applicable except future roadmap items that receive an explicit scope decision. |
 | Volume 3 - MQTT/API Integration | Chapters 1-18 and 20 applicable; Chapter 19 future REST/WebSocket excluded | MQTT subset must be explicitly closed in Plan 2 Step 7. |
-| Volume 4 - HMI | Chapters 1-18 | Applicable to the 1024x600 Waveshare 7B baseline; optional themes/languages may be formally scoped in Step 9. |
+| Volume 4 - HMI | Chapters 1-18 | Applicable to the 1024x600 Waveshare 7B baseline. Product scope is English with one light operational theme; optional themes/languages are excluded. |
 | Volume 5 - Hardware | Chapters 1-6 applicable; Chapter 7 RS-485/expansion excluded | Hardware claims require inspection/FAT/SAT evidence. |
 
 ## 13. Current Summary
@@ -297,11 +297,11 @@ Chapter-level rows are not included in these counts.
 
 | Status | Count |
 |---|---:|
-| Implemented | 15 |
-| Partial | 144 |
-| Missing | 29 |
+| Implemented | 19 |
+| Partial | 145 |
+| Missing | 23 |
 | Not Verified | 35 |
-| Not Applicable | 2 |
+| Not Applicable | 3 |
 | **Total explicit occurrences** | **225** |
 
 The principal release blockers are:

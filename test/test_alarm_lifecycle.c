@@ -42,6 +42,24 @@ static void test_critical_requires_resolution_and_acknowledgment(void)
     assert(!alarm_manager_has_lockout(&manager));
 }
 
+static void test_clearing_one_critical_alarm_keeps_other_lockout(void)
+{
+       alarm_manager_t manager;
+       alarm_manager_init(&manager);
+
+       alarm_manager_raise(&manager, ZIC_ALARM_PIPE_BREAK, ZIC_ALARM_CRITICAL);
+       alarm_manager_raise(&manager, ZIC_ALARM_PRESSURE_COLLAPSE, ZIC_ALARM_CRITICAL);
+       assert(alarm_manager_acknowledge(&manager, ZIC_ALARM_PIPE_BREAK));
+       assert(alarm_manager_acknowledge(&manager, ZIC_ALARM_PRESSURE_COLLAPSE));
+       alarm_manager_clear(&manager, ZIC_ALARM_PIPE_BREAK);
+       alarm_manager_clear(&manager, ZIC_ALARM_PRESSURE_COLLAPSE);
+
+       assert(alarm_manager_manual_clear(&manager, ZIC_ALARM_PIPE_BREAK));
+       assert(alarm_manager_has_lockout(&manager));
+       assert(alarm_manager_manual_clear(&manager, ZIC_ALARM_PRESSURE_COLLAPSE));
+       assert(!alarm_manager_has_lockout(&manager));
+}
+
 static void test_critical_severity_cannot_be_downgraded(void)
 {
        alarm_manager_t manager;
@@ -111,6 +129,7 @@ int main(void)
 {
     test_warning_auto_recovery();
     test_critical_requires_resolution_and_acknowledgment();
+       test_clearing_one_critical_alarm_keeps_other_lockout();
        test_critical_severity_cannot_be_downgraded();
     test_invalid_transitions_and_reactivation();
        test_snapshot_round_trip_and_corruption();

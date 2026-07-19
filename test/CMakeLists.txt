@@ -26,6 +26,12 @@ zic_add_host_test(test_alarm_lifecycle
 target_include_directories(test_alarm_lifecycle PRIVATE
     ../components/alarm_manager/include)
 
+zic_add_host_test(test_hmi_controller
+    test_hmi_controller.c
+    ../components/hmi_board/src/hmi_controller.c)
+target_include_directories(test_hmi_controller PRIVATE
+    ../components/hmi_board/include)
+
 zic_add_host_test(test_config_validation
     test_config_validation.c
     ../components/config_manager/src/config_validation.c)

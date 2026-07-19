@@ -5,6 +5,7 @@ idf_component_register(
         "src/hmi_7b_rgb.c"
         "src/hmi_7b_touch.c"
         "src/hmi_board.c"
+        "src/hmi_controller.c"
         "src/hmi_touch.c"
         "src/hmi_lvgl_port.c"
     INCLUDE_DIRS "include"

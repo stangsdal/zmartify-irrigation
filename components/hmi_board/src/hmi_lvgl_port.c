@@ -7,6 +7,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "hmi_7b_rgb.h"
+#include "hmi_board.h"
 #include "lvgl.h"
 
 #include <inttypes.h>
@@ -24,7 +25,6 @@ static const char *TAG = "hmi_lvgl";
 #define LVGL_TASK_MAX_DELAY_MS         16
 #define LVGL_DRAW_LINES                40
 #define STATUS_UPDATE_PERIOD_MS         1000
-#define HMI_SCREEN_COUNT                5
 #define HMI_NAV_X                       24
 #define HMI_NAV_Y                       112
 #define HMI_NAV_W                       (LCD_H_RES - 48)
@@ -45,15 +45,6 @@ typedef struct
     bool valid;
 } hmi_touch_state_t;
 
-typedef enum
-{
-    HMI_SCREEN_DASHBOARD = 0,
-    HMI_SCREEN_IRRIGATION,
-    HMI_SCREEN_WEATHER,
-    HMI_SCREEN_HYDRAULICS,
-    HMI_SCREEN_SETTINGS,
-} hmi_screen_t;
-
 static esp_lcd_panel_handle_t s_panel = NULL;
 static SemaphoreHandle_t s_lvgl_mutex = NULL;
 static TaskHandle_t s_lvgl_task = NULL;
@@ -70,6 +61,8 @@ static lv_obj_t *s_label_note = NULL;
 static lv_obj_t *s_content_root = NULL;
 static lv_obj_t *s_nav_buttons[HMI_SCREEN_COUNT] = {0};
 static lv_obj_t *s_screen_cards[HMI_SCREEN_COUNT] = {0};
+static lv_obj_t *s_screen_lines[HMI_SCREEN_COUNT][5] = {{0}};
+static lv_obj_t *s_confirmation_overlay = NULL;
 static hmi_screen_t s_active_screen = HMI_SCREEN_DASHBOARD;
 static volatile bool s_screen_change_pending = false;
 static volatile hmi_screen_t s_pending_screen = HMI_SCREEN_DASHBOARD;
@@ -80,6 +73,15 @@ static int64_t s_last_perf_us = 0;
 static int64_t s_last_status_update_us = 0;
 static hmi_touch_state_t s_last_touch = {0};
 static bool s_touch_was_pressed = false;
+static hmi_controller_t s_controller;
+static hmi_snapshot_fn s_snapshot = NULL;
+static void *s_bindings_context = NULL;
+static hmi_view_model_t s_view_model;
+static uint8_t s_selected_zone = 1u;
+static uint8_t s_selected_program = 1u;
+static uint16_t s_selected_runtime_minutes = 10u;
+static uint8_t s_selected_alarm = 0u;
+static char s_action_feedback[64] = "Ready";
 
 static lv_color_t *s_draw_buf_1 = NULL;
 static lv_color_t *s_draw_buf_2 = NULL;
@@ -113,9 +115,27 @@ static const char *screen_summary(hmi_screen_t screen)
 
 static void update_nav_highlight(void);
 static void rebuild_active_screen(void);
+static void update_view_labels(void);
 static lv_obj_t *create_screen_body(lv_obj_t *parent, hmi_screen_t screen);
 static void create_all_screen_bodies(lv_obj_t *parent);
 static void process_nav_tap(int16_t x, int16_t y);
+
+typedef enum {
+    HMI_UI_ZONE_PREVIOUS = 1,
+    HMI_UI_ZONE_NEXT,
+    HMI_UI_RUNTIME_SHORTER,
+    HMI_UI_RUNTIME_LONGER,
+    HMI_UI_START_ZONE,
+    HMI_UI_PROGRAM_PREVIOUS,
+    HMI_UI_PROGRAM_NEXT,
+    HMI_UI_RUN_PROGRAM,
+    HMI_UI_STOP_ALL,
+    HMI_UI_RAIN_DELAY,
+    HMI_UI_CLEAR_RAIN_DELAY,
+    HMI_UI_ALARM_NEXT,
+    HMI_UI_ACKNOWLEDGE_ALARM,
+    HMI_UI_CLEAR_ALARM,
+} hmi_ui_action_t;
 
 static void set_label_text_if_changed(lv_obj_t *label, const char *text)
 {
@@ -131,6 +151,208 @@ static void set_label_text_if_changed(lv_obj_t *label, const char *text)
     }
 
     lv_label_set_text(label, text);
+}
+
+static const char *controller_state_name(uint8_t state)
+{
+    static const char *const names[] = {
+        "Boot", "Initializing", "Idle", "Running", "Paused", "Rain delay", "Fault", "Emergency stop"
+    };
+    return state < (sizeof(names) / sizeof(names[0])) ? names[state] : "Unknown";
+}
+
+static const char *alarm_state_name(uint8_t state)
+{
+    static const char *const names[] = {"Cleared", "Active", "Acknowledged", "Resolved"};
+    return state < (sizeof(names) / sizeof(names[0])) ? names[state] : "Unknown";
+}
+
+static void close_confirmation(void)
+{
+    if (s_confirmation_overlay != NULL) {
+        lv_obj_del(s_confirmation_overlay);
+        s_confirmation_overlay = NULL;
+    }
+}
+
+static void confirmation_event_cb(lv_event_t *event)
+{
+    bool accepted = (uintptr_t)lv_event_get_user_data(event) != 0u;
+    bool dispatched = hmi_controller_confirm(&s_controller, accepted);
+    snprintf(s_action_feedback, sizeof(s_action_feedback), "%s",
+             !accepted ? "Action cancelled" : dispatched ? "Command queued" : "Command rejected");
+    close_confirmation();
+}
+
+static lv_obj_t *create_action_button(lv_obj_t *parent,
+                                      const char *text,
+                                      int x,
+                                      int width,
+                                      hmi_ui_action_t action);
+
+static void show_confirmation(void)
+{
+    hmi_action_t action;
+    if (!hmi_controller_confirmation_pending(&s_controller, &action) ||
+        s_confirmation_overlay != NULL) {
+        return;
+    }
+
+    s_confirmation_overlay = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(s_confirmation_overlay, LCD_H_RES, LCD_V_RES);
+    lv_obj_set_pos(s_confirmation_overlay, 0, 0);
+    lv_obj_set_style_bg_color(s_confirmation_overlay, lv_color_hex(0x102A43), 0);
+    lv_obj_set_style_bg_opa(s_confirmation_overlay, LV_OPA_70, 0);
+    lv_obj_set_style_border_width(s_confirmation_overlay, 0, 0);
+    lv_obj_clear_flag(s_confirmation_overlay, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *dialog = lv_obj_create(s_confirmation_overlay);
+    lv_obj_set_size(dialog, 520, 220);
+    lv_obj_center(dialog);
+    lv_obj_set_style_bg_color(dialog, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_border_color(dialog, lv_color_hex(0xD1495B), 0);
+    lv_obj_set_style_border_width(dialog, 3, 0);
+    lv_obj_set_style_radius(dialog, 8, 0);
+    lv_obj_clear_flag(dialog, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(dialog);
+    lv_label_set_text(title, "Confirm local action");
+    lv_obj_set_style_text_color(title, lv_color_hex(0x102A43), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 22);
+
+    lv_obj_t *message = lv_label_create(dialog);
+    lv_label_set_text(message, hmi_controller_confirmation_text(&action));
+    lv_obj_set_style_text_color(message, lv_color_hex(0x334E68), 0);
+    lv_obj_align(message, LV_ALIGN_TOP_MID, 0, 68);
+
+    lv_obj_t *cancel = lv_btn_create(dialog);
+    lv_obj_set_size(cancel, 180, 48);
+    lv_obj_align(cancel, LV_ALIGN_BOTTOM_LEFT, 36, -24);
+    lv_obj_add_event_cb(cancel, confirmation_event_cb, LV_EVENT_CLICKED, (void *)0u);
+    lv_obj_t *cancel_label = lv_label_create(cancel);
+    lv_label_set_text(cancel_label, "Cancel");
+    lv_obj_center(cancel_label);
+
+    lv_obj_t *confirm = lv_btn_create(dialog);
+    lv_obj_set_size(confirm, 180, 48);
+    lv_obj_align(confirm, LV_ALIGN_BOTTOM_RIGHT, -36, -24);
+    lv_obj_set_style_bg_color(confirm, lv_color_hex(0xD1495B), 0);
+    lv_obj_add_event_cb(confirm, confirmation_event_cb, LV_EVENT_CLICKED, (void *)1u);
+    lv_obj_t *confirm_label = lv_label_create(confirm);
+    lv_label_set_text(confirm_label, "Confirm");
+    lv_obj_center(confirm_label);
+}
+
+static void request_action(const hmi_action_t *action)
+{
+    hmi_request_result_t result = hmi_controller_request(&s_controller, action);
+    if (result == HMI_REQUEST_CONFIRMATION_REQUIRED) {
+        snprintf(s_action_feedback, sizeof(s_action_feedback), "Awaiting confirmation");
+        show_confirmation();
+    } else {
+        snprintf(s_action_feedback, sizeof(s_action_feedback), "%s",
+                 result == HMI_REQUEST_DISPATCHED ? "Command queued" : "Command rejected");
+    }
+}
+
+static void hmi_action_event_cb(lv_event_t *event)
+{
+    hmi_ui_action_t ui_action = (hmi_ui_action_t)(uintptr_t)lv_event_get_user_data(event);
+    hmi_action_t action = {0};
+
+    switch (ui_action) {
+    case HMI_UI_ZONE_PREVIOUS:
+        s_selected_zone = s_selected_zone > 1u ? s_selected_zone - 1u : 15u;
+        break;
+    case HMI_UI_ZONE_NEXT:
+        s_selected_zone = s_selected_zone < 15u ? s_selected_zone + 1u : 1u;
+        break;
+    case HMI_UI_RUNTIME_SHORTER:
+        s_selected_runtime_minutes = s_selected_runtime_minutes > 5u
+            ? s_selected_runtime_minutes - 5u : 5u;
+        break;
+    case HMI_UI_RUNTIME_LONGER:
+        s_selected_runtime_minutes = s_selected_runtime_minutes < 120u
+            ? s_selected_runtime_minutes + 5u : 120u;
+        break;
+    case HMI_UI_PROGRAM_PREVIOUS:
+        s_selected_program = s_selected_program > 1u ? s_selected_program - 1u : 8u;
+        break;
+    case HMI_UI_PROGRAM_NEXT:
+        s_selected_program = s_selected_program < 8u ? s_selected_program + 1u : 1u;
+        break;
+    case HMI_UI_START_ZONE:
+        if (s_view_model.controller_state != 2u || s_view_model.config_safe_mode) {
+            snprintf(s_action_feedback, sizeof(s_action_feedback), "Start unavailable: controller not idle");
+            break;
+        }
+        action.type = HMI_ACTION_START_ZONE;
+        action.zone_id = s_selected_zone;
+        action.runtime_seconds = (uint32_t)s_selected_runtime_minutes * 60u;
+        request_action(&action);
+        break;
+    case HMI_UI_RUN_PROGRAM:
+        if (s_view_model.controller_state != 2u || s_view_model.config_safe_mode ||
+            !s_view_model.program_enabled[s_selected_program - 1u]) {
+            snprintf(s_action_feedback, sizeof(s_action_feedback), "Program unavailable");
+            break;
+        }
+        action.type = HMI_ACTION_RUN_PROGRAM;
+        action.program_id = s_selected_program;
+        request_action(&action);
+        break;
+    case HMI_UI_STOP_ALL:
+        action.type = HMI_ACTION_STOP_ALL;
+        request_action(&action);
+        break;
+    case HMI_UI_RAIN_DELAY:
+        action.type = HMI_ACTION_SET_RAIN_DELAY;
+        action.rain_delay_hours = 24u;
+        request_action(&action);
+        break;
+    case HMI_UI_CLEAR_RAIN_DELAY:
+        action.type = HMI_ACTION_CLEAR_RAIN_DELAY;
+        request_action(&action);
+        break;
+    case HMI_UI_ALARM_NEXT:
+        if (s_view_model.alarm_count > 0u) {
+            s_selected_alarm = (uint8_t)((s_selected_alarm + 1u) % s_view_model.alarm_count);
+        }
+        break;
+    case HMI_UI_ACKNOWLEDGE_ALARM:
+    case HMI_UI_CLEAR_ALARM:
+        if (s_view_model.alarm_count > 0u) {
+            action.type = ui_action == HMI_UI_ACKNOWLEDGE_ALARM
+                ? HMI_ACTION_ACKNOWLEDGE_ALARM : HMI_ACTION_CLEAR_ALARM;
+            action.alarm_code = s_view_model.alarms[s_selected_alarm].code;
+            request_action(&action);
+        }
+        break;
+    default:
+        break;
+    }
+    update_view_labels();
+}
+
+static lv_obj_t *create_action_button(lv_obj_t *parent,
+                                      const char *text,
+                                      int x,
+                                      int width,
+                                      hmi_ui_action_t action)
+{
+    lv_obj_t *button = lv_btn_create(parent);
+    lv_obj_set_size(button, width, 38);
+    lv_obj_set_pos(button, x, 256);
+    lv_obj_set_style_radius(button, 6, 0);
+    lv_obj_set_style_bg_color(button,
+                              action == HMI_UI_STOP_ALL ? lv_color_hex(0xD1495B)
+                                                        : lv_color_hex(0x176B87), 0);
+    lv_obj_add_event_cb(button, hmi_action_event_cb, LV_EVENT_CLICKED,
+                        (void *)(uintptr_t)action);
+    lv_obj_t *label = lv_label_create(button);
+    lv_label_set_text(label, text);
+    lv_obj_center(label);
+    return button;
 }
 
 #if HMI_RGB_BYPASS_DIAG_MODE
@@ -157,6 +379,18 @@ static const rgb_diag_profile_t s_rgb_profiles[] = {
 
 extern bool hmi_touch_init(void);
 extern bool hmi_touch_read(uint16_t *x, uint16_t *y, bool *pressed);
+
+bool hmi_lvgl_port_bind(const hmi_board_bindings_t *bindings)
+{
+    if (bindings == NULL || bindings->snapshot == NULL || bindings->dispatch == NULL) {
+        return false;
+    }
+
+    s_snapshot = bindings->snapshot;
+    s_bindings_context = bindings->context;
+    hmi_controller_init(&s_controller, bindings->dispatch, bindings->context);
+    return true;
+}
 
 static inline bool lvgl_lock(TickType_t timeout_ticks)
 {
@@ -288,6 +522,7 @@ static void process_nav_tap(int16_t x, int16_t y)
             hmi_screen_t next_screen = (hmi_screen_t)i;
             if (next_screen != s_active_screen)
             {
+                (void)hmi_controller_navigate(&s_controller, next_screen);
                 s_pending_screen = next_screen;
                 s_screen_change_pending = true;
                 ESP_LOGI(TAG, "screen change requested: %s", s_screen_titles[next_screen]);
@@ -324,62 +559,43 @@ static lv_obj_t *create_screen_body(lv_obj_t *parent, hmi_screen_t screen)
     lv_obj_set_style_text_color(summary, lv_color_hex(0x457B9D), 0);
     lv_obj_align(summary, LV_ALIGN_TOP_LEFT, 18, 44);
 
-    const char *lines[6] = {0};
-    size_t line_count = 0;
-
-    switch (screen)
-    {
-        case HMI_SCREEN_DASHBOARD:
-            lines[0] = "Status: Idle";
-            lines[1] = "Weather: 23.8 C  |  Humidity: 48%  |  ET: 2.1 mm";
-            lines[2] = "Water: Flow 24.4 L/min  |  Pressure 3.48 bar";
-            lines[3] = "Quick actions: Start  Stop  Rain delay  Manual zone  Alarms";
-            line_count = 4;
-            break;
-        case HMI_SCREEN_IRRIGATION:
-            lines[0] = "Current program: Program A";
-            lines[1] = "Current zone: Zone 1";
-            lines[2] = "Remaining runtime: 18 min";
-            lines[3] = "Flow: 24.4 L/min";
-            lines[4] = "Pressure: 3.48 bar";
-            lines[5] = "Water used: 12.6 L";
-            line_count = 6;
-            break;
-        case HMI_SCREEN_WEATHER:
-            lines[0] = "Temperature: 23.8 C";
-            lines[1] = "Humidity: 48%";
-            lines[2] = "Wind: 8.4 km/h";
-            lines[3] = "Rain: 0.0 mm";
-            lines[4] = "ET: 2.1 mm";
-            lines[5] = "Alerts: None";
-            line_count = 6;
-            break;
-        case HMI_SCREEN_HYDRAULICS:
-            lines[0] = "Hydraulic health: Excellent";
-            lines[1] = "Current flow: 24.4 L/min";
-            lines[2] = "Current pressure: 3.48 bar";
-            lines[3] = "Leak status: Clear";
-            lines[4] = "Restriction status: Clear";
-            lines[5] = "Diagnostics: Ready";
-            line_count = 6;
-            break;
-        case HMI_SCREEN_SETTINGS:
-        default:
-            lines[0] = "Controller name: Zmartify Irrigation";
-            lines[1] = "Active user: Admin";
-            lines[2] = "Wi-Fi status: Connected";
-            lines[3] = "MQTT status: Connected";
-            lines[4] = "Maintenance: Diagnostics, alarms, firmware";
-            line_count = 5;
-            break;
-    }
-
-    for (size_t i = 0; i < line_count; ++i)
+    for (size_t i = 0; i < 5u; ++i)
     {
         lv_obj_t *line = lv_label_create(card);
-        lv_label_set_text(line, lines[i]);
+        lv_label_set_text(line, "Loading controller data...");
         lv_obj_set_style_text_color(line, lv_color_hex(0x2B2D42), 0);
-        lv_obj_align(line, LV_ALIGN_TOP_LEFT, 18, 84 + (int)i * 36);
+        lv_obj_align(line, LV_ALIGN_TOP_LEFT, 18, 82 + (int)i * 32);
+        s_screen_lines[screen][i] = line;
+    }
+
+    switch (screen) {
+    case HMI_SCREEN_DASHBOARD:
+        create_action_button(card, "STOP ALL", 18, 150, HMI_UI_STOP_ALL);
+        break;
+    case HMI_SCREEN_IRRIGATION: {
+        const char *labels[] = {"Zone -", "Zone +", "Time -", "Time +", "Start", "Prog -", "Prog +", "Run", "STOP"};
+        const hmi_ui_action_t actions[] = {
+            HMI_UI_ZONE_PREVIOUS, HMI_UI_ZONE_NEXT, HMI_UI_RUNTIME_SHORTER,
+            HMI_UI_RUNTIME_LONGER, HMI_UI_START_ZONE, HMI_UI_PROGRAM_PREVIOUS,
+            HMI_UI_PROGRAM_NEXT, HMI_UI_RUN_PROGRAM, HMI_UI_STOP_ALL
+        };
+        for (size_t index = 0; index < 9u; ++index) {
+            create_action_button(card, labels[index], 18 + (int)index * 101, 92, actions[index]);
+        }
+        break;
+    }
+    case HMI_SCREEN_WEATHER:
+        create_action_button(card, "Rain delay 24h", 18, 180, HMI_UI_RAIN_DELAY);
+        create_action_button(card, "Clear delay", 210, 160, HMI_UI_CLEAR_RAIN_DELAY);
+        break;
+    case HMI_SCREEN_HYDRAULICS:
+        create_action_button(card, "Next alarm", 18, 160, HMI_UI_ALARM_NEXT);
+        create_action_button(card, "Acknowledge", 190, 170, HMI_UI_ACKNOWLEDGE_ALARM);
+        create_action_button(card, "Clear resolved", 372, 180, HMI_UI_CLEAR_ALARM);
+        break;
+    case HMI_SCREEN_SETTINGS:
+    default:
+        break;
     }
 
     return card;
@@ -397,6 +613,117 @@ static void create_all_screen_bodies(lv_obj_t *parent)
     }
 }
 
+static void set_screen_line(hmi_screen_t screen, size_t line, const char *text)
+{
+    if (screen < HMI_SCREEN_COUNT && line < 5u) {
+        set_label_text_if_changed(s_screen_lines[screen][line], text);
+    }
+}
+
+static void update_view_labels(void)
+{
+    char text[160];
+
+    snprintf(text, sizeof(text), "Controller: %s  |  Active zone: %u  |  Remaining: %lu s",
+             controller_state_name(s_view_model.controller_state),
+             (unsigned)s_view_model.active_zone,
+             (unsigned long)s_view_model.remaining_seconds);
+    set_screen_line(HMI_SCREEN_DASHBOARD, 0, text);
+    snprintf(text, sizeof(text), "Weather: %.1f C  |  Humidity: %u%%  |  ET: %.2f mm",
+             (double)s_view_model.temperature_c_x10 / 10.0,
+             (unsigned)s_view_model.humidity_pct,
+             (double)s_view_model.et_mm_x100 / 100.0);
+    set_screen_line(HMI_SCREEN_DASHBOARD, 1, text);
+    snprintf(text, sizeof(text), "Hydraulics: %.2f L/min  |  %.2f bar",
+             (double)s_view_model.flow_lpm_x100 / 100.0,
+             (double)s_view_model.pressure_mbar / 1000.0);
+    set_screen_line(HMI_SCREEN_DASHBOARD, 2, text);
+    snprintf(text, sizeof(text), "Programs enabled: %u  |  Rain delay: %u h",
+             (unsigned)s_view_model.enabled_programs,
+             (unsigned)s_view_model.rain_delay_hours);
+    set_screen_line(HMI_SCREEN_DASHBOARD, 3, text);
+    snprintf(text, sizeof(text), "Alarms: %u%s",
+             (unsigned)s_view_model.alarm_count,
+             s_view_model.config_safe_mode ? "  |  CONFIG SAFE MODE" : "");
+    set_screen_line(HMI_SCREEN_DASHBOARD, 4, text);
+
+    snprintf(text, sizeof(text), "Current: %s  |  Zone %u  |  %lu s remaining",
+             controller_state_name(s_view_model.controller_state),
+             (unsigned)s_view_model.active_zone,
+             (unsigned long)s_view_model.remaining_seconds);
+    set_screen_line(HMI_SCREEN_IRRIGATION, 0, text);
+    snprintf(text, sizeof(text), "Manual selection: Zone %u for %u minutes",
+             (unsigned)s_selected_zone, (unsigned)s_selected_runtime_minutes);
+    set_screen_line(HMI_SCREEN_IRRIGATION, 1, text);
+    snprintf(text, sizeof(text), "Program selection: Program %u (%s)  |  %u enabled",
+             (unsigned)s_selected_program,
+             s_view_model.program_enabled[s_selected_program - 1u] ? "enabled" : "disabled",
+             (unsigned)s_view_model.enabled_programs);
+    set_screen_line(HMI_SCREEN_IRRIGATION, 2, text);
+    snprintf(text, sizeof(text), "Flow: %.2f L/min  |  Pressure: %.2f bar",
+             (double)s_view_model.flow_lpm_x100 / 100.0,
+             (double)s_view_model.pressure_mbar / 1000.0);
+    set_screen_line(HMI_SCREEN_IRRIGATION, 3, text);
+    set_screen_line(HMI_SCREEN_IRRIGATION, 4,
+                    s_view_model.config_safe_mode ? "Commands inhibited: configuration safe mode"
+                                                  : "Start and program actions require confirmation");
+
+    snprintf(text, sizeof(text), "Temperature: %.1f C  |  Humidity: %u%%",
+             (double)s_view_model.temperature_c_x10 / 10.0,
+             (unsigned)s_view_model.humidity_pct);
+    set_screen_line(HMI_SCREEN_WEATHER, 0, text);
+    snprintf(text, sizeof(text), "Rain last 24h: %.1f mm  |  ET: %.2f mm",
+             (double)s_view_model.rain_mm_x10 / 10.0,
+             (double)s_view_model.et_mm_x100 / 100.0);
+    set_screen_line(HMI_SCREEN_WEATHER, 1, text);
+    snprintf(text, sizeof(text), "Active rain delay: %u hours",
+             (unsigned)s_view_model.rain_delay_hours);
+    set_screen_line(HMI_SCREEN_WEATHER, 2, text);
+    set_screen_line(HMI_SCREEN_WEATHER, 3, "Rain delay stops active irrigation and pauses scheduling");
+    set_screen_line(HMI_SCREEN_WEATHER, 4, "Changes require local confirmation");
+
+    snprintf(text, sizeof(text), "Flow: %s  %.2f L/min",
+             s_view_model.flow_available ? "available" : "unavailable",
+             (double)s_view_model.flow_lpm_x100 / 100.0);
+    set_screen_line(HMI_SCREEN_HYDRAULICS, 0, text);
+    snprintf(text, sizeof(text), "Pressure: %s  %.2f bar",
+             s_view_model.pressure_available ? "available" : "unavailable",
+             (double)s_view_model.pressure_mbar / 1000.0);
+    set_screen_line(HMI_SCREEN_HYDRAULICS, 1, text);
+    snprintf(text, sizeof(text), "Alarm records: %u", (unsigned)s_view_model.alarm_count);
+    set_screen_line(HMI_SCREEN_HYDRAULICS, 2, text);
+    if (s_view_model.alarm_count == 0u) {
+        s_selected_alarm = 0u;
+        set_screen_line(HMI_SCREEN_HYDRAULICS, 3, "Selected alarm: None");
+        set_screen_line(HMI_SCREEN_HYDRAULICS, 4, "Hydraulic lockout: Clear");
+    } else {
+        if (s_selected_alarm >= s_view_model.alarm_count) {
+            s_selected_alarm = 0u;
+        }
+        const hmi_alarm_view_t *alarm = &s_view_model.alarms[s_selected_alarm];
+        snprintf(text, sizeof(text), "Selected %u/%u: Code %u  |  Severity %u",
+                 (unsigned)(s_selected_alarm + 1u), (unsigned)s_view_model.alarm_count,
+                 (unsigned)alarm->code, (unsigned)alarm->severity);
+        set_screen_line(HMI_SCREEN_HYDRAULICS, 3, text);
+        snprintf(text, sizeof(text), "State: %s  |  Clear is accepted only after resolve + acknowledge",
+                 alarm_state_name(alarm->state));
+        set_screen_line(HMI_SCREEN_HYDRAULICS, 4, text);
+    }
+
+    set_screen_line(HMI_SCREEN_SETTINGS, 0, "Display baseline: Waveshare 7B  |  1024x600 RGB  |  GT911");
+    set_screen_line(HMI_SCREEN_SETTINGS, 1, "Interface scope: English  |  Light operational theme");
+    snprintf(text, sizeof(text), "MQTT: %s  |  Time: %s",
+             s_view_model.mqtt_connected ? "Connected" : "Disconnected",
+             s_view_model.time_synchronized ? "Synchronized" : "Unsynchronized");
+    set_screen_line(HMI_SCREEN_SETTINGS, 2, text);
+    snprintf(text, sizeof(text), "Storage: %s  |  Configuration: %s",
+             s_view_model.storage_ready ? "Healthy" : "Unavailable",
+             s_view_model.config_safe_mode ? "SAFE MODE" : "Validated");
+    set_screen_line(HMI_SCREEN_SETTINGS, 3, text);
+    set_screen_line(HMI_SCREEN_SETTINGS, 4,
+                    "Credentials and safety limits require authenticated service tooling");
+}
+
 static void update_status_labels(void)
 {
     char uptime_buf[64];
@@ -404,6 +731,14 @@ static void update_status_labels(void)
     char zone_buf[64];
     char touch_buf[64];
     char perf_buf[64];
+
+    if (s_snapshot != NULL) {
+        hmi_view_model_t snapshot;
+        if (s_snapshot(s_bindings_context, &snapshot)) {
+            s_view_model = snapshot;
+        }
+    }
+    update_view_labels();
 
     if (!s_last_touch.valid)
     {
@@ -468,7 +803,17 @@ static void update_status_labels(void)
     set_label_text_if_changed(s_label_zone, zone_buf);
     set_label_text_if_changed(s_label_touch, touch_buf);
     set_label_text_if_changed(s_label_perf, perf_buf);
-    set_label_text_if_changed(s_label_note, screen_summary(s_active_screen));
+    if (s_view_model.config_safe_mode) {
+        set_label_text_if_changed(s_label_note, "CONFIG SAFE MODE");
+        lv_obj_set_style_text_color(s_label_note, lv_color_hex(0xD1495B), 0);
+    } else if (s_view_model.alarm_count > 0u) {
+        snprintf(zone_buf, sizeof(zone_buf), "ALARMS: %u", (unsigned)s_view_model.alarm_count);
+        set_label_text_if_changed(s_label_note, zone_buf);
+        lv_obj_set_style_text_color(s_label_note, lv_color_hex(0xD1495B), 0);
+    } else {
+        set_label_text_if_changed(s_label_note, s_action_feedback);
+        lv_obj_set_style_text_color(s_label_note, lv_color_hex(0x4A4E69), 0);
+    }
 
     s_last_perf_us = now_us;
     s_last_flush_count = flush_now;

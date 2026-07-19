@@ -14,7 +14,11 @@
 
 This chapter defines the complete hardware implementation of the Human–Machine Interface electronics for the Zmartify controller.
 
-The display subsystem is based on a **7-inch 800×480 RGB TFT display** driven directly from the ESP32-S3 RGB LCD peripheral, combined with a **GT911 capacitive multi-touch controller**.
+> **Active hardware baseline:** The production controller uses the Waveshare ESP32-S3 7B with a
+> **1024×600 RGB TFT** and GT911 touch controller. The 800×480 profile below is retained as legacy
+> design history and is superseded by [HARDWARE-7B.md](../../HARDWARE-7B.md).
+
+The legacy display subsystem was based on a **7-inch 800×480 RGB TFT display** driven directly from the ESP32-S3 RGB LCD peripheral, combined with a **GT911 capacitive multi-touch controller**.
 
 Unlike SPI displays, the RGB interface provides continuous pixel streaming, enabling smooth 60 FPS graphics, LVGL animations and highly responsive touch interaction.
 

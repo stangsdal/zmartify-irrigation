@@ -76,6 +76,7 @@ static zic_log_entry_t s_log_buffer[ZIC_LOG_PERSIST_CAPACITY];
 
 typedef enum {
     ZIC_CMD_START_ZONE = 0,
+    ZIC_CMD_RUN_PROGRAM,
     ZIC_CMD_STOP_ZONE,
     ZIC_CMD_STOP_ALL,
     ZIC_CMD_SET_RAIN_DELAY,
@@ -86,6 +87,7 @@ typedef enum {
 typedef struct {
     zic_runtime_command_type_t type;
     uint8_t zone_id;
+    uint8_t program_id;
     uint32_t runtime_seconds;
     uint16_t rain_delay_hours;
     char command_id[ZIC_V2_COMMAND_ID_MAX];
@@ -1202,6 +1204,27 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
         }
         break;
     }
+    case ZIC_CMD_RUN_PROGRAM: {
+        config_program_t program;
+        uint8_t program_index = cmd->program_id - 1u;
+        if (cmd->program_id == 0u || cmd->program_id > CONFIG_MAX_PROGRAMS ||
+            config_get_program(program_index, &program) != CFG_OK || !program.enabled ||
+            !irrigation_engine_is_idle(&ctx->engine) || ctx->scheduled_program_active ||
+            alarm_manager_has_lockout(&ctx->alarm_manager)) {
+            zic_publish_v2_outcome(ctx, cmd->command_id, "program.rejected", "warning",
+                                   "rejected", "program_unavailable", 0);
+            break;
+        }
+        ctx->scheduled_program_active = true;
+        ctx->scheduled_program_index = program_index;
+        ctx->scheduled_next_zone_index = 0u;
+        ctx->scheduled_program = program;
+        storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
+                               ZIC_LOG_IRRIGATION, "program started by local command");
+        zic_publish_v2_outcome(ctx, cmd->command_id, "program.started", "info",
+                               "completed", NULL, 0);
+        break;
+    }
     case ZIC_CMD_STOP_ZONE:
         ctx->scheduled_program_active = false;
         if (irrigation_engine_stop_zone(&ctx->engine, cmd->zone_id)) {
@@ -1674,6 +1697,119 @@ static void zic_telemetry_task(void *arg)
     }
 }
 
+static bool zic_hmi_snapshot(void *context, hmi_view_model_t *view_model)
+{
+    zic_app_context_t *ctx = context;
+    if (ctx == NULL || view_model == NULL || s_ctx_lock == NULL) {
+        return false;
+    }
+
+    hmi_view_model_t snapshot = {0};
+    if (xSemaphoreTake(s_ctx_lock, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return false;
+    }
+
+    snapshot.controller_state = (uint8_t)ctx->engine.controller.state;
+    snapshot.active_zone = ctx->engine.active_zone_id;
+    snapshot.remaining_seconds = irrigation_engine_remaining_seconds(
+        &ctx->engine, (uint64_t)(esp_timer_get_time() / 1000));
+    snapshot.flow_lpm_x100 = ctx->flow_manager.current_lpm_x100;
+    snapshot.pressure_mbar = ctx->pressure_manager.current_pressure_mbar;
+    snapshot.temperature_c_x10 = (int16_t)(ctx->weather_snapshot.temperature_c * 10.0f);
+    snapshot.humidity_pct = (uint8_t)ctx->weather_snapshot.humidity_pct;
+    snapshot.rain_mm_x10 = (uint16_t)(ctx->weather_snapshot.rain_mm_last_24h * 10.0f);
+    snapshot.et_mm_x100 = (uint16_t)(ctx->et_output.daily_et_mm * 100.0f);
+    snapshot.flow_available = ctx->flow_manager.measurement_valid;
+    snapshot.pressure_available = ctx->pressure_manager.measurement_valid;
+    snapshot.mqtt_connected = mqtt_transport_is_connected(&ctx->mqtt_transport);
+    snapshot.time_synchronized = hal_time_is_synced();
+    snapshot.storage_ready = ctx->storage_ready && ctx->storage_last_write_ok;
+    snapshot.config_safe_mode = config_is_safe_mode();
+    for (size_t index = 0; index < ZIC_MAX_ACTIVE_ALARMS &&
+         snapshot.alarm_count < HMI_MAX_VISIBLE_ALARMS; ++index) {
+        const zic_alarm_t *alarm = &ctx->alarm_manager.alarms[index];
+        if (alarm->state == ZIC_ALARM_STATE_CLEARED) {
+            continue;
+        }
+        hmi_alarm_view_t *alarm_view = &snapshot.alarms[snapshot.alarm_count++];
+        alarm_view->code = (uint16_t)alarm->code;
+        alarm_view->severity = (uint8_t)alarm->severity;
+        alarm_view->state = (uint8_t)alarm->state;
+    }
+    xSemaphoreGive(s_ctx_lock);
+
+    uint32_t rain_delay = 0;
+    (void)persistent_store_get_u32("rain_delay_h", &rain_delay, 0u);
+    snapshot.rain_delay_hours = (uint16_t)rain_delay;
+    for (uint8_t index = 0; index < CONFIG_MAX_PROGRAMS; ++index) {
+        config_program_t program;
+        if (config_get_program(index, &program) == CFG_OK && program.enabled) {
+            ++snapshot.enabled_programs;
+            snapshot.program_enabled[index] = true;
+        }
+    }
+
+    *view_model = snapshot;
+    return true;
+}
+
+static bool zic_hmi_dispatch(void *context, const hmi_action_t *action)
+{
+    zic_app_context_t *ctx = context;
+    if (ctx == NULL || action == NULL) {
+        return false;
+    }
+
+    zic_runtime_command_t command = {0};
+    strncpy(command.command_id, "hmi", sizeof(command.command_id) - 1u);
+    switch (action->type) {
+    case HMI_ACTION_START_ZONE:
+        command.type = ZIC_CMD_START_ZONE;
+        command.zone_id = action->zone_id;
+        command.runtime_seconds = action->runtime_seconds;
+        break;
+    case HMI_ACTION_RUN_PROGRAM:
+        command.type = ZIC_CMD_RUN_PROGRAM;
+        command.program_id = action->program_id;
+        break;
+    case HMI_ACTION_STOP_ALL:
+        command.type = ZIC_CMD_STOP_ALL;
+        break;
+    case HMI_ACTION_SET_RAIN_DELAY:
+        command.type = ZIC_CMD_SET_RAIN_DELAY;
+        command.rain_delay_hours = action->rain_delay_hours;
+        break;
+    case HMI_ACTION_CLEAR_RAIN_DELAY:
+        command.type = ZIC_CMD_CLEAR_RAIN_DELAY;
+        break;
+    case HMI_ACTION_ACKNOWLEDGE_ALARM:
+    case HMI_ACTION_CLEAR_ALARM: {
+        if (s_ctx_lock == NULL || xSemaphoreTake(s_ctx_lock, pdMS_TO_TICKS(100)) != pdTRUE) {
+            return false;
+        }
+        bool accepted = action->type == HMI_ACTION_ACKNOWLEDGE_ALARM
+            ? alarm_manager_acknowledge(&ctx->alarm_manager,
+                                        (zic_alarm_code_t)action->alarm_code)
+            : alarm_manager_manual_clear(&ctx->alarm_manager,
+                                         (zic_alarm_code_t)action->alarm_code);
+        if (accepted && action->type == HMI_ACTION_CLEAR_ALARM &&
+            !alarm_manager_has_lockout(&ctx->alarm_manager)) {
+            ctx->safety_fault_latched = false;
+            (void)zic_controller_apply_event(&ctx->engine.controller,
+                                             ZIC_EV_FAULT_CLEAR, -1);
+            xEventGroupClearBits(s_runtime_events, ZIC_EVENT_FAULT);
+        }
+        zic_alarm_flush(&ctx->alarm_manager);
+        xSemaphoreGive(s_ctx_lock);
+        return accepted;
+    }
+    default:
+        return false;
+    }
+
+    return s_command_queue != NULL && xQueueSend(s_command_queue, &command, 0) == pdTRUE;
+}
+
 #if ZIC_RELAY_SELF_TEST
 static void zic_run_relay_self_test(void)
 {
@@ -1806,6 +1942,15 @@ void app_main(void)
     xSemaphoreTake(s_ctx_lock, portMAX_DELAY);
     zic_runtime_init_context(&s_ctx);
     xSemaphoreGive(s_ctx_lock);
+
+    const hmi_board_bindings_t hmi_bindings = {
+        .snapshot = zic_hmi_snapshot,
+        .dispatch = zic_hmi_dispatch,
+        .context = &s_ctx,
+    };
+    if (!hmi_board_bind(&hmi_bindings)) {
+        ESP_LOGW(TAG, "HMI runtime binding unavailable");
+    }
 
     const diagnostics_manager_config_t diagnostics_config = {
         .snapshot = zic_diagnostics_snapshot,

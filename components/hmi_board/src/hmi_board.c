@@ -13,6 +13,7 @@ static const char *TAG = "hmi_board";
 
 extern bool hmi_touch_detect(void);
 extern bool hmi_lvgl_port_init(void);
+extern bool hmi_lvgl_port_bind(const hmi_board_bindings_t *bindings);
 
 static hmi_board_status_t s_status;
 
@@ -79,6 +80,15 @@ bool hmi_board_init(void)
              s_status.panel_ready);
 
     return s_status.backlight_enabled || s_status.panel_ready || s_status.touch_present || io_ok;
+}
+
+bool hmi_board_bind(const hmi_board_bindings_t *bindings)
+{
+    if (bindings == NULL || bindings->snapshot == NULL || bindings->dispatch == NULL) {
+        return false;
+    }
+
+    return hmi_lvgl_port_bind(bindings);
 }
 
 void hmi_board_get_status(hmi_board_status_t *out_status)
