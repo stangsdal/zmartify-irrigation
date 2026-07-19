@@ -22,6 +22,7 @@ idf_component_register(SRCS "main.c"
                              pressure_manager
                              relay_manager
                              storage_manager
+                             valve_diagnostics
                              weather_manager
                              watersensor_client
                              zic_hal

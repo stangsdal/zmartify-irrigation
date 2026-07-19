@@ -27,6 +27,12 @@ target_include_directories(test_config_validation PRIVATE
     ../components/config_manager/include)
 target_link_libraries(test_config_validation PRIVATE m)
 
+zic_add_host_test(test_valve_diagnostics
+    test_valve_diagnostics.c
+    ../components/valve_diagnostics/src/valve_diagnostics.c)
+target_include_directories(test_valve_diagnostics PRIVATE
+    ../components/valve_diagnostics/include)
+
 zic_add_host_test(test_irrigation_engine
     test_irrigation_engine.c
     ../components/irrigation_engine/src/irrigation_engine.c

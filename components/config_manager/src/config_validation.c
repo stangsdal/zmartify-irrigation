@@ -58,7 +58,11 @@ bool config_validate_hydraulics(const config_hydraulic_t *config)
         isfinite(config->pressure_min_bar) && config->pressure_min_bar >= 0.0f &&
         isfinite(config->pressure_max_bar) &&
         config->pressure_max_bar > config->pressure_min_bar &&
-        config->pressure_max_bar <= 10.0f;
+        config->pressure_max_bar <= 10.0f &&
+        config->valve_open_timeout_s > 0u &&
+        config->valve_open_timeout_s <= CONFIG_SUPERVISION_MAX_S &&
+        config->valve_close_timeout_s > 0u &&
+        config->valve_close_timeout_s <= CONFIG_SUPERVISION_MAX_S;
 }
 
 bool config_validate_alarms(const config_alarms_t *config)
@@ -143,6 +147,8 @@ bool config_migrate_v1(zic_config_t *config)
     config->alarms.flow_idle_max_age_ms = 5000;
     config->alarms.cabinet_warn_temp_c = legacy_alarms.cabinet_warn_temp_c;
     config->alarms.cabinet_crit_temp_c = legacy_alarms.cabinet_crit_temp_c;
+    config->hydraulics.valve_open_timeout_s = 30;
+    config->hydraulics.valve_close_timeout_s = 10;
 
     for (uint8_t index = 0; index < CONFIG_MAX_ZONES; ++index) {
         config_zone_v1_t legacy_zone;
@@ -153,6 +159,17 @@ bool config_migrate_v1(zic_config_t *config)
         config->zones[index].et_crop_coefficient_x100 =
             legacy_zone.et_crop_coefficient_x100;
     }
+    config->schema_version = CONFIG_SCHEMA_VERSION;
+    return true;
+}
+
+bool config_migrate_v2(zic_config_t *config)
+{
+    if (config == NULL || config->schema_version != 2u) {
+        return false;
+    }
+    config->hydraulics.valve_open_timeout_s = 30;
+    config->hydraulics.valve_close_timeout_s = 10;
     config->schema_version = CONFIG_SCHEMA_VERSION;
     return true;
 }

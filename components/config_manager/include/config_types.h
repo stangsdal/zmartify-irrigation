@@ -8,6 +8,7 @@
  * Schema version history:
  *   1  – v5.0 initial schema
  *   2  – configurable hydraulic supervision timing and freshness
+ *   3  – dedicated valve opening and closing response timeouts
  *
  * Architecture ref: MEP v5.0 Volume 2, Chapter 14
  */
@@ -19,7 +20,7 @@
 
 /* ─── Schema & limits ────────────────────────────────────────────────── */
 
-#define CONFIG_SCHEMA_VERSION    2       /**< Increment on incompatible changes */
+#define CONFIG_SCHEMA_VERSION    3       /**< Increment on incompatible changes */
 #define CONFIG_MAGIC             0x5A49  /**< 'ZI' – used as header sanity check */
 
 #define CONFIG_MAX_ZONES         15      /**< Relays 1-15 are irrigation zones */
@@ -201,7 +202,9 @@ typedef struct
     float    pressure_offset_mv;      /**< Zero-offset in millivolts */
     float    pressure_min_bar;        /**< Operational minimum (for alarm) */
     float    pressure_max_bar;        /**< Operational maximum (for alarm) */
-    uint8_t  _reserved[8];
+    uint16_t valve_open_timeout_s;    /**< Maximum time to observe opening response */
+    uint16_t valve_close_timeout_s;   /**< Maximum time to observe flow cessation */
+    uint8_t  _reserved[4];
 } config_hydraulic_t;
 
 /* ─── Alarm thresholds ─────────────────────────────────────────────────── */

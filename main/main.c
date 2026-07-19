@@ -31,6 +31,7 @@
 #include "pressure_manager.h"
 #include "relay_manager.h"
 #include "storage_manager.h"
+#include "valve_diagnostics.h"
 #include "weather_manager.h"
 #include "watersensor_client.h"
 #include "hmi_board.h"
@@ -96,6 +97,7 @@ typedef struct {
     alarm_manager_t alarm_manager;
     flow_manager_t flow_manager;
     pressure_manager_t pressure_manager;
+    valve_diagnostics_t valve_diagnostics;
     storage_manager_t storage_manager;
     weather_snapshot_t weather_snapshot;
     weather_manager_t weather_manager;
@@ -1021,6 +1023,13 @@ static void zic_runtime_init_context(zic_app_context_t *ctx)
     ctx->flow_supervision.high_flow_duration_ms = alarm_config.high_flow_duration_s * 1000u;
     ctx->flow_supervision.active_max_age_ms = alarm_config.flow_active_max_age_ms;
     ctx->flow_supervision.idle_max_age_ms = alarm_config.flow_idle_max_age_ms;
+    valve_diag_config_t valve_diag_config = {
+        .open_response_timeout_ms = ctx->hydraulic_config.valve_open_timeout_s * 1000u,
+        .close_response_timeout_ms = ctx->hydraulic_config.valve_close_timeout_s * 1000u,
+        .minimum_flow_lpm_x100 = (uint32_t)alarm_config.flow_low_lpm_x10 * 10u,
+        .minimum_pressure_mbar = alarm_config.pressure_low_mbar,
+    };
+    (void)valve_diagnostics_init(&ctx->valve_diagnostics, &valve_diag_config);
     storage_manager_init(&ctx->storage_manager, s_log_buffer, ZIC_LOG_PERSIST_CAPACITY);
     storage_manager_set_persistence(&ctx->storage_manager, zic_log_load, zic_log_save, NULL);
     if (!storage_manager_restore(&ctx->storage_manager)) {
@@ -1163,13 +1172,23 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
     }
     case ZIC_CMD_STOP_ZONE:
         ctx->scheduled_program_active = false;
-        irrigation_engine_stop_zone(&ctx->engine, cmd->zone_id);
-        storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
-                       ZIC_LOG_IRRIGATION, "zone stopped by command");
-        zic_publish_v2_outcome(ctx, "run.stopped", "info", "completed", NULL, cmd->zone_id);
+        if (irrigation_engine_stop_zone(&ctx->engine, cmd->zone_id)) {
+            valve_diagnostics_command_close(&ctx->valve_diagnostics,
+                                            (uint64_t)(esp_timer_get_time() / 1000));
+            storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
+                           ZIC_LOG_IRRIGATION, "zone stopped by command");
+            zic_publish_v2_outcome(ctx, "run.stopped", "info", "completed", NULL, cmd->zone_id);
+        } else {
+            zic_publish_v2_outcome(ctx, "run.stop_rejected", "warning", "rejected",
+                                   "zone_not_active", cmd->zone_id);
+        }
         break;
     case ZIC_CMD_STOP_ALL:
         ctx->scheduled_program_active = false;
+        if (!irrigation_engine_is_idle(&ctx->engine)) {
+            valve_diagnostics_command_close(&ctx->valve_diagnostics,
+                                            (uint64_t)(esp_timer_get_time() / 1000));
+        }
         irrigation_engine_stop_all(&ctx->engine);
         storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
                        ZIC_LOG_AUDIT, "all irrigation stopped by command");
@@ -1177,6 +1196,10 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
         break;
     case ZIC_CMD_SET_RAIN_DELAY:
         ctx->scheduled_program_active = false;
+        if (!irrigation_engine_is_idle(&ctx->engine)) {
+            valve_diagnostics_command_close(&ctx->valve_diagnostics,
+                                            (uint64_t)(esp_timer_get_time() / 1000));
+        }
         (void)irrigation_engine_stop_all(&ctx->engine);
         persistent_store_set_u32("rain_delay_h", cmd->rain_delay_hours);
         zic_controller_apply_event(&ctx->engine.controller, ZIC_EV_RAIN_DELAY_SET, -1);
@@ -1348,8 +1371,16 @@ static void zic_control_task(void *arg)
         xSemaphoreTake(s_ctx_lock, portMAX_DELAY);
 
         irrigation_phase_t previous_phase = s_ctx.engine.phase;
-        (void)irrigation_engine_tick(&s_ctx.engine,
-                                     (uint64_t)(esp_timer_get_time() / 1000));
+        uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
+        (void)irrigation_engine_tick(&s_ctx.engine, now_ms);
+        if (previous_phase != IRRIGATION_PHASE_RUNNING &&
+            s_ctx.engine.phase == IRRIGATION_PHASE_RUNNING) {
+            valve_diagnostics_command_open(&s_ctx.valve_diagnostics,
+                                           s_ctx.engine.active_zone_id, now_ms);
+        } else if (previous_phase == IRRIGATION_PHASE_RUNNING &&
+                   s_ctx.engine.phase != IRRIGATION_PHASE_RUNNING) {
+            valve_diagnostics_command_close(&s_ctx.valve_diagnostics, now_ms);
+        }
         if (previous_phase == IRRIGATION_PHASE_MASTER_CLOSE_DELAY &&
             irrigation_engine_is_idle(&s_ctx.engine)) {
             storage_manager_append(&s_ctx.storage_manager, zic_log_timestamp(),
@@ -1405,6 +1436,53 @@ static void zic_control_task(void *arg)
                                          irrigation_active,
                                          (uint64_t)(esp_timer_get_time() / 1000),
                                          &s_ctx.alarm_manager);
+        valve_diag_observation_t valve_observation = {
+            .flow_valid = flow.valid &&
+                flow.measurement_age_ms <= (irrigation_active
+                    ? s_ctx.flow_supervision.active_max_age_ms
+                    : s_ctx.flow_supervision.idle_max_age_ms),
+            .flow_lpm_x100 = flow.flow_lpm_x100,
+            .pressure_valid = pressure_valid,
+            .pressure_mbar = pressure_mbar_value,
+        };
+        valve_diag_status_t previous_valve_status = s_ctx.valve_diagnostics.status;
+        valve_diag_status_t valve_status = valve_diagnostics_evaluate(
+            &s_ctx.valve_diagnostics, &valve_observation, now_ms);
+        if (valve_status != previous_valve_status) {
+            if (valve_status == VALVE_DIAG_SENSOR_UNAVAILABLE) {
+                alarm_manager_raise(&s_ctx.alarm_manager,
+                                    ZIC_ALARM_VALVE_DIAGNOSTICS_UNAVAILABLE,
+                                    ZIC_ALARM_WARNING);
+                storage_manager_append(&s_ctx.storage_manager, zic_log_timestamp(),
+                                       ZIC_LOG_ALARM,
+                                       "valve diagnostics unavailable; hydraulic sensors");
+            } else {
+                alarm_manager_clear(&s_ctx.alarm_manager,
+                                    ZIC_ALARM_VALVE_DIAGNOSTICS_UNAVAILABLE);
+            }
+            if (valve_status == VALVE_DIAG_NO_RESPONSE) {
+                alarm_manager_raise(&s_ctx.alarm_manager,
+                                    ZIC_ALARM_VALVE_NO_RESPONSE,
+                                    ZIC_ALARM_CRITICAL);
+                storage_manager_append(&s_ctx.storage_manager, zic_log_timestamp(),
+                                       ZIC_LOG_ALARM,
+                                       "valve command produced no hydraulic response");
+            } else if (valve_status == VALVE_DIAG_LIKELY_STUCK_CLOSED) {
+                alarm_manager_raise(&s_ctx.alarm_manager,
+                                    ZIC_ALARM_VALVE_LIKELY_STUCK_CLOSED,
+                                    ZIC_ALARM_CRITICAL);
+                storage_manager_append(&s_ctx.storage_manager, zic_log_timestamp(),
+                                       ZIC_LOG_ALARM,
+                                       "valve no response; likely stuck closed");
+            } else if (valve_status == VALVE_DIAG_LIKELY_STUCK_OPEN) {
+                alarm_manager_raise(&s_ctx.alarm_manager,
+                                    ZIC_ALARM_VALVE_LIKELY_STUCK_OPEN,
+                                    ZIC_ALARM_CRITICAL);
+                storage_manager_append(&s_ctx.storage_manager, zic_log_timestamp(),
+                                       ZIC_LOG_ALARM,
+                                       "flow after close; likely stuck open");
+            }
+        }
         uint32_t weather_now = 0;
         weather_snapshot_t fresh_weather;
         if (hal_time_get_epoch(&weather_now) == HAL_OK &&
@@ -1438,6 +1516,9 @@ static void zic_control_task(void *arg)
             }
             s_ctx.safety_fault_latched = true;
             s_ctx.scheduled_program_active = false;
+            if (!irrigation_engine_is_idle(&s_ctx.engine)) {
+                valve_diagnostics_command_close(&s_ctx.valve_diagnostics, now_ms);
+            }
             (void)irrigation_engine_stop_all(&s_ctx.engine);
             (void)zic_controller_apply_event(&s_ctx.engine.controller, ZIC_EV_FAULT, -1);
             xEventGroupSetBits(s_runtime_events, ZIC_EVENT_FAULT);

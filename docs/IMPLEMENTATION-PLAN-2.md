@@ -178,8 +178,9 @@ auditable configuration.
 
 **Implementation and verification (2026-07-20):**
 
-- Configuration schema v2 owns all active hydraulic supervision values. Schema v1 is migrated
-  in place and immediately persisted; corrupt, incompatible or unsafe blobs use factory defaults.
+- Configuration schema v3 owns all active hydraulic supervision values. Schema v1 and v2 are
+  migrated in place and immediately persisted; corrupt, incompatible or unsafe blobs use factory
+  defaults.
 - Runtime and commit paths validate calibration, threshold ordering, timing/freshness bounds,
   runtime limits, per-zone deviation limits and the effective zone/global flow envelope.
 - Zone commissioning records observed stable flow and a pressure envelope of +/-20 percent via
@@ -206,6 +207,7 @@ auditable configuration.
 | Flow warning/critical deviation | 15% / 30% | 0 < warning < critical <= 100% |
 | No-flow/high-flow duration | 30 s / 10 s | 1-3600 s / 1-300 s |
 | Active/idle flow freshness | 1500 / 5000 ms | active 100-10000 ms; idle >= active and <= 60000 ms |
+| Valve open/close response timeout | 30 / 10 s | each 1-300 s |
 | Zone/global maximum runtime | 3600 / 7200 s | positive; default <= zone max <= global max |
 
 **Commissioning procedure:**
@@ -244,6 +246,38 @@ behaviour.
 - Stuck-open/no-response scenarios produce the documented alarm and safe action.
 - Sensor-unavailable states are reported as unavailable, not as a confirmed relay fault.
 - Hardware tests cover all 16 outputs without unsafe simultaneous activation.
+
+**Implementation and verification (2026-07-19):**
+
+- The installed HL-58S/MCP23017/ULN2803A chain provides command output only. It has no relay
+  contact feedback, valve position feedback or solenoid current sensing; MEP Volume 5 identifies
+  current monitoring as a future hardware capability. Relay Manager shadow state is therefore
+  treated only as command state and never as proof of physical actuation.
+- `valve_diagnostics` correlates engine phase transitions with fresh WaterSensor flow and local
+  pressure observations. Schema v3 provides dedicated validated opening/closing response times;
+  global minimum flow and pressure remain the response thresholds.
+- Opening is confirmed only by fresh flow. Fresh zero flow with adequate pressure is classified
+  `likely stuck closed`; fresh zero flow without adequate pressure is the less-specific
+  `no response`. Missing fresh flow is `sensor unavailable`, even when pressure is present.
+- Flow that persists after close or appears while idle is time-qualified as `likely stuck open`.
+  Pressure alone is never used to prove closure or a stuck-open valve.
+- `no response`, `likely stuck closed` and `likely stuck open` raise distinct critical alarms,
+  persist an alarm event and use the existing critical hydraulic shutdown/lockout path.
+  `sensor unavailable` raises a warning and does not claim a physical relay or valve fault.
+- Critical valve alarms intentionally remain latched with the safety lockout. Automatic clearing
+  after apparent sensor recovery would erase incident state; acknowledge/resolve/clear semantics
+  remain owned by Step 8 alarm lifecycle work.
+- Host fault injection covers normal opening/closing, timeout boundaries, unavailable/recovery,
+  generic no-response, pressure-correlated likely stuck-closed, post-close flow and idle flow.
+- The isolated relay service firmware covers outputs 0-15 sequentially. It forces all outputs OFF
+  before, between and after 500 ms pulses and requires disconnected loads plus explicit operator
+  confirmation. It does not constitute electrical contact/current feedback.
+
+The signed normal firmware builds successfully and was OTA-deployed to the ESP32-S3 at
+`192.168.10.113`. Schema v2 migrated to v3, the read-only log service remained available and the
+automatic health gate recorded `ota image confirmed valid`. Physical hydraulic fault injection
+remains pending until WaterSensor and ADS1115 pressure acquisition are available. The relay service
+test was not run against connected valves during this step.
 
 **Commit:** `Plan 2 Step 5: Add relay and valve diagnostics`
 
@@ -401,7 +435,7 @@ For each step:
 | 2. HTTP authentication | Not started | - |
 | 3. OTA trust and rollback | Signed OTA and automatic rollback hardware-verified; power-interruption FAT pending | `Plan 2 Step 3: Enforce trusted OTA and rollback` |
 | 4. Hydraulic safety configuration | Firmware complete; installed hydraulic commissioning pending | `Plan 2 Step 4: Externalize hydraulic safety configuration` |
-| 5. Relay and valve diagnostics | Not started | - |
+| 5. Relay and valve diagnostics | Firmware complete; hydraulic fault injection pending | `Plan 2 Step 5: Add relay and valve diagnostics` |
 | 6. Integrated diagnostics | Not started | - |
 | 7. MQTT compliance | Not started | - |
 | 8. Config migration and alarm lifecycle | Not started | - |

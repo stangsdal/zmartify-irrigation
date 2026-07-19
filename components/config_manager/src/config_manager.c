@@ -79,6 +79,8 @@ static void apply_factory_defaults(zic_config_t *cfg)
     cfg->hydraulics.pressure_offset_mv    = 500.0f;   /* 0.5 V = 0 bar */
     cfg->hydraulics.pressure_min_bar      = 0.5f;
     cfg->hydraulics.pressure_max_bar      = 8.0f;
+    cfg->hydraulics.valve_open_timeout_s  = 30;
+    cfg->hydraulics.valve_close_timeout_s = 10;
 
     /* Alarms */
     cfg->alarms.pressure_low_mbar         = 500;    /* 0.5 bar */
@@ -167,6 +169,15 @@ static cfg_result_t load_from_nvs(void)
         }
         s_migrated = true;
         ESP_LOGI(TAG, "Config migrated from schema v1 to v%u", CONFIG_SCHEMA_VERSION);
+    }
+    else if (s_config.schema_version == 2u)
+    {
+        if (!config_migrate_v2(&s_config))
+        {
+            return CFG_VERSION_MISMATCH;
+        }
+        s_migrated = true;
+        ESP_LOGI(TAG, "Config migrated from schema v2 to v%u", CONFIG_SCHEMA_VERSION);
     }
     else if (s_config.schema_version != CONFIG_SCHEMA_VERSION)
     {

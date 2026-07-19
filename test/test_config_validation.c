@@ -45,6 +45,8 @@ static zic_config_t valid_config(void)
     config.hydraulics.pressure_offset_mv = 500.0f;
     config.hydraulics.pressure_min_bar = 0.5f;
     config.hydraulics.pressure_max_bar = 8.0f;
+    config.hydraulics.valve_open_timeout_s = 30;
+    config.hydraulics.valve_close_timeout_s = 10;
     config.alarms.pressure_low_mbar = 500;
     config.alarms.pressure_high_mbar = 7000;
     config.alarms.flow_low_lpm_x10 = 20;
@@ -95,6 +97,9 @@ static void test_safety_boundaries(void)
     config = valid_config();
     config.hydraulics.pressure_mv_per_bar = 0.0f;
     assert(!config_validate_safety(&config));
+    config = valid_config();
+    config.hydraulics.valve_close_timeout_s = 0;
+    assert(!config_validate_safety(&config));
 }
 
 static void test_zone_commissioning(void)
@@ -139,6 +144,8 @@ static void test_schema_v1_migration(void)
     assert(config.alarms.pressure_critical_duration_s == 5);
     assert(config.alarms.flow_active_max_age_ms == 1500);
     assert(config.alarms.cabinet_warn_temp_c == 47);
+    assert(config.hydraulics.valve_open_timeout_s == 30);
+    assert(config.hydraulics.valve_close_timeout_s == 10);
     assert(config.zones[0].flow_warning_deviation_pct == 15);
     assert(config.zones[0].flow_critical_deviation_pct == 30);
     assert(config.zones[0].seasonal_factor_pct == 95);
@@ -147,10 +154,25 @@ static void test_schema_v1_migration(void)
     assert(!config_migrate_v1(&config));
 }
 
+static void test_schema_v2_migration(void)
+{
+    zic_config_t config = valid_config();
+    memset(&config.hydraulics.valve_open_timeout_s, 0, 4);
+    config.schema_version = 2;
+
+    assert(config_migrate_v2(&config));
+    assert(config.schema_version == CONFIG_SCHEMA_VERSION);
+    assert(config.hydraulics.valve_open_timeout_s == 30);
+    assert(config.hydraulics.valve_close_timeout_s == 10);
+    assert(config_validate_safety(&config));
+    assert(!config_migrate_v2(&config));
+}
+
 int main(void)
 {
     test_safety_boundaries();
     test_zone_commissioning();
     test_schema_v1_migration();
+    test_schema_v2_migration();
     return 0;
 }

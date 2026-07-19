@@ -88,8 +88,8 @@ The MEP reuses `UI-001..005` for two different requirement sets. This RTM uses o
 |---|---|---|---|---|---|
 | FR-HYD-001 | Continuous active flow measurement, resolution better than 0.1 L/min | `Partial` | WaterSensor snapshots consumed by [watersensor_client.c](../components/watersensor_client/src/watersensor_client.c) | Protocol test; measurement resolution/calibration not verified | 10 |
 | FR-HYD-002 | Continuous active pressure measurement detecting +/-0.1 bar deviations | `Partial` | ADS1115 pressure path, schema-v2 calibration and per-zone bounds in [config_types.h](../components/config_manager/include/config_types.h), and [pressure_manager.c](../components/pressure_manager/src/pressure_manager.c) | [Configuration boundary/migration tests](../test/test_config_validation.c) and safety rules pass; physical resolution/calibration absent | 4 |
-| FR-HYD-003 | Learn per-zone average/min/max/stddev flow | `Missing` | Baseline comparison exists; statistical learning model does not | No learning test | 5 |
-| FR-HYD-004 | Excess unexpected flow raises critical alarm, stops, logs and publishes | `Partial` | Configurable per-zone baseline/deviation supervision with global absolute clamp and critical shutdown | [Configuration tests](../test/test_config_validation.c) and safety rules pass; MQTT and physical fault injection incomplete | 5 |
+| FR-HYD-003 | Learn per-zone average/min/max/stddev flow | `Missing` | Commissioned baseline and response correlation exist; statistical learning model does not | [Valve diagnostic fault injection](../test/test_valve_diagnostics.c); no statistical learning test | 5 |
+| FR-HYD-004 | Excess unexpected flow raises critical alarm, stops, logs and publishes | `Partial` | Configurable per-zone supervision plus time-qualified idle/post-close flow classification in [valve_diagnostics.c](../components/valve_diagnostics/src/valve_diagnostics.c) | [Valve diagnostic fault injection](../test/test_valve_diagnostics.c), configuration and safety tests pass; MQTT and physical fault injection incomplete | 5 |
 | FR-HYD-005 | Pressure loss raises hydraulic fault and safely terminates irrigation | `Implemented` | Pressure collapse escalation and critical shutdown | Safety rules and cross-component acceptance test | - |
 | FR-WEA-001 | Accept local temperature, humidity, wind, rain, solar and UV data | `Implemented` | Provider-neutral `/weather` snapshot and cache | Weather validation/cache tests | - |
 | FR-WEA-002 | Optionally retrieve Internet forecast from pluggable providers | `Partial` | Provider-neutral ingestion boundary only | No controller-side provider/poll test | 7 |
@@ -161,8 +161,8 @@ evidence is linked. Firmware support is noted but does not prove electrical comp
 
 | ID | Condensed requirement | Status | Implementation/verification evidence | Plan step |
 |---|---|---|---|---|
-| SAF-001 | Prevent uncontrolled water flow | `Partial` | Master/zone sequencing and hydraulic shutdown tested; physical faults not fully injected | 5 |
-| SAF-002 | Prevent flooding from valve or pipe failure | `Partial` | Excess-flow/pressure policies exist; stuck-open diagnostics incomplete | 5 |
+| SAF-001 | Prevent uncontrolled water flow | `Partial` | Master/zone sequencing plus no-response/post-close-flow critical shutdown tested; physical faults not fully injected | 5 |
+| SAF-002 | Prevent flooding from valve or pipe failure | `Partial` | Time-qualified unexpected-flow and likely-stuck-open policy uses critical shutdown | [Valve diagnostic fault injection](../test/test_valve_diagnostics.c); physical injection pending | 5 |
 | SAF-003 | Protect irrigation equipment under abnormal operation | `Partial` | Runtime limits and pressure/flow alarms; electrical/power monitoring incomplete | 5 |
 | SAF-004 | Protect users through mains/SELV separation | `Not Verified` | Requires electrical inspection and FAT | 10 |
 | SAF-005 | Preserve complete history after safety incidents | `Partial` | CRC alarm/event persistence; schema/capacity do not prove complete incident history | 6 |
@@ -224,7 +224,7 @@ destination. Each source ID is written explicitly to permit machine coverage che
 | Volume 1, Chapter 9 MQTT | SYS-MQTT-001, SYS-MQTT-002, SYS-MQTT-003, SYS-MQTT-004, SYS-MQTT-005 | `Partial` | Live transport/subscriptions exist; schema, QoS, duplicate and recovery contract tests incomplete | 7 |
 | Volume 1, Chapter 9 storage | SYS-STO-001, SYS-STO-002 | `Partial` | CRC event/weather persistence exists; complete retention/capacity requirements not proven | 6, 10 |
 | Volume 2, Chapter 4 HAL | HAL-001, HAL-002, HAL-003, HAL-004, HAL-005, HAL-006 | `Partial` | HAL boundaries exist for active hardware; API and hardware-verification breadth incomplete | 5, 10 |
-| Volume 2, Chapter 7 relay architecture | REL-001, REL-002, REL-003, REL-004, REL-005, REL-006 | `Partial` | Exclusive relay ownership and interlocks exist; electrical/response diagnostics incomplete | 5 |
+| Volume 2, Chapter 7 relay architecture | REL-001, REL-002, REL-003, REL-004, REL-005, REL-006 | `Partial` | Exclusive relay ownership/interlocks and hydraulic response diagnostics exist; installed hardware has no contact/current feedback | 5 |
 | Volume 2, Chapter 13 MQTT architecture | MQTT-001, MQTT-002, MQTT-003, MQTT-004 | `Partial` | MQTT transport and v2 message subset exist; full architectural contract is open | 7 |
 | Volume 2/3 security architecture | SEC-001, SEC-002, SEC-003, SEC-004, SEC-005, SEC-006 | `Partial` | Signed OTA and MQTT TLS exist; HTTP auth, authorization, replay controls, hardware secure boot and flash encryption remain open | 2, 3, 7 |
 | Volume 3, Chapter 1 communications | COM-001, COM-002, COM-003, COM-004, COM-005 | `Partial` | MQTT-first integration exists; reliability/security/compliance evidence incomplete | 7 |
@@ -255,7 +255,7 @@ through the following stable chapter-level keys until the source documents assig
 | MEP-V2-C4-HAL | HAL isolation and required peripheral services | `Partial` | I2C/relay/time/storage/sensors exist; hardware verification incomplete | 10 |
 | MEP-V2-C5-IRR | Irrigation engine sequencing, authorization and safe cancellation | `Partial` | Core sequencing implemented; cycle/soak and full authorization incomplete | 2, 9 |
 | MEP-V2-C6-ZONE | Zone authority, metadata, statistics and interfaces | `Partial` | Basic state/config exists; richer metadata/statistics incomplete | 9 |
-| MEP-V2-C7-RELAY | Relay interlocks, diagnostics and electrical feedback | `Partial` | Exclusive actuation exists; physical feedback diagnostics missing | 5 |
+| MEP-V2-C7-RELAY | Relay interlocks, diagnostics and electrical feedback | `Partial` | Exclusive actuation and hydraulic response correlation implemented; contact/current feedback unavailable on installed hardware | 5 |
 | MEP-V2-C8-WEATHER | Provider, cache, decisions, events and diagnostics | `Partial` | Cache/policy exists; provider polling/events/diagnostics incomplete | 6, 7 |
 | MEP-V2-C9-ET | Reference/crop ET, failure handling and diagnostics | `Partial` | FAO-56 daily model and tests; site calibration/event integration incomplete | 6, 10 |
 | MEP-V2-C10-FLOW | Learning, anomaly policy and predictive diagnostics | `Partial` | Anomaly supervision exists; learning/predictive diagnostics missing | 5 |
@@ -309,7 +309,7 @@ The principal release blockers are:
 1. unauthenticated HTTP control and OTA endpoints;
 2. OTA rollback bootloader provisioning and physical failure/interruption evidence;
 3. installed per-zone hydraulic commissioning and physical threshold/fault-injection evidence;
-4. missing physical valve/relay response diagnostics;
+4. pending physical valve-response fault injection and unavailable electrical contact/current feedback;
 5. disconnected/inaccurate system diagnostics;
 6. incomplete MQTT schema, QoS, replay and outcome contract;
 7. no formal FAT/SAT, performance or long-duration evidence.
