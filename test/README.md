@@ -14,7 +14,18 @@ This folder contains host-side C tests for critical logic.
     sensitivity and invalid-input handling.
 - `test_watersensor_protocol.c` validates Water Sensor frame decoding, CRC,
   protocol-major rejection and malformed lengths.
+- `test_acceptance_safety_shutdown.c` validates the cross-component critical pressure
+    fault path: alarm escalation, zone-before-master shutdown and persistent alarm restore.
 
-## Next Step
+## Running Host Tests
 
-Integrate these tests into ESP-IDF Unity test runner and CI workflow.
+The host mode does not require ESP-IDF:
+
+```sh
+cmake -S . -B build-host-tests -DZIC_HOST_TESTS=ON
+cmake --build build-host-tests
+ctest --test-dir build-host-tests --output-on-failure
+```
+
+All host targets compile with `-Wall -Wextra -Werror`. GitHub Actions runs the same
+configure, build and CTest sequence for every push and pull request.

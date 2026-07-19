@@ -1,4 +1,5 @@
 build/
+build-host-tests/
 managed_components/
 .vscode/
 .DS_Store
