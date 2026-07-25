@@ -22,6 +22,8 @@ static bool action_is_valid(const hmi_action_t *action)
     case HMI_ACTION_ACKNOWLEDGE_ALARM:
     case HMI_ACTION_CLEAR_ALARM:
         return action->alarm_code != 0u;
+    case HMI_ACTION_RELAY_SELF_TEST:
+        return true;
     default:
         return false;
     }
@@ -125,6 +127,8 @@ const char *hmi_controller_confirmation_text(const hmi_action_t *action)
         return "Acknowledge this alarm?";
     case HMI_ACTION_CLEAR_ALARM:
         return "Clear resolved alarm and release lockout?";
+    case HMI_ACTION_RELAY_SELF_TEST:
+        return "Run relay test across all outputs?";
     case HMI_ACTION_STOP_ALL:
     default:
         return "Confirm action";

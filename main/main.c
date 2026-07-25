@@ -64,6 +64,9 @@ static zic_log_entry_t s_log_buffer[ZIC_LOG_PERSIST_CAPACITY];
 #define ZIC_TELEM_TASK_PRIO 5
 #define ZIC_WATERSENSOR_TASK_PRIO 9
 
+#define ZIC_RELAY_TEST_PULSE_MS 700u
+#define ZIC_RELAY_TEST_GAP_MS 300u
+
 #define ZIC_EVENT_ENGINE_READY BIT0
 #define ZIC_EVENT_FAULT BIT1
 #define ZIC_EVENT_OTA_CONFIRMED BIT2
@@ -81,7 +84,8 @@ typedef enum {
     ZIC_CMD_STOP_ALL,
     ZIC_CMD_SET_RAIN_DELAY,
     ZIC_CMD_CLEAR_RAIN_DELAY,
-    ZIC_CMD_TRIGGER_OTA
+    ZIC_CMD_TRIGGER_OTA,
+    ZIC_CMD_RELAY_SELF_TEST
 } zic_runtime_command_type_t;
 
 typedef struct {
@@ -1192,6 +1196,70 @@ static bool zic_runtime_start_zone(zic_app_context_t *ctx,
     return true;
 }
 
+static bool zic_runtime_run_relay_self_test(zic_app_context_t *ctx)
+{
+    if (ctx == NULL || !irrigation_engine_is_idle(&ctx->engine) ||
+        ctx->scheduled_program_active || alarm_manager_has_lockout(&ctx->alarm_manager)) {
+        return false;
+    }
+
+    const TickType_t pulse_ticks = pdMS_TO_TICKS(ZIC_RELAY_TEST_PULSE_MS);
+    const TickType_t gap_ticks = pdMS_TO_TICKS(ZIC_RELAY_TEST_GAP_MS);
+
+    ESP_LOGW(TAG, "HMI relay self-test started; each relay is pulsed in sequence");
+    storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
+                           ZIC_LOG_AUDIT, "relay self-test started from HMI");
+
+    relay_result_t result = relay_close_all();
+    if (result != RELAY_OK) {
+        ESP_LOGE(TAG, "Relay self-test aborted: close-all failed (%d)", result);
+        return false;
+    }
+
+    result = relay_master_open();
+    ESP_LOGI(TAG, "Relay self-test: master relay ON");
+    vTaskDelay(pulse_ticks);
+    if (result != RELAY_OK || relay_master_close() != RELAY_OK) {
+        (void)relay_close_all();
+        ESP_LOGE(TAG, "Relay self-test failed on master relay (%d)", result);
+        return false;
+    }
+    ESP_LOGI(TAG, "Relay self-test: master relay OFF");
+    vTaskDelay(gap_ticks);
+
+    result = relay_master_open();
+    if (result != RELAY_OK) {
+        (void)relay_close_all();
+        ESP_LOGE(TAG, "Relay self-test aborted: master relay could not be opened (%d)", result);
+        return false;
+    }
+
+    for (uint8_t relay = RELAY_ZONE_FIRST; relay <= RELAY_ZONE_LAST; ++relay) {
+        result = relay_zone_open(relay);
+        ESP_LOGI(TAG, "Relay self-test: zone relay %u ON", (unsigned)relay);
+        vTaskDelay(pulse_ticks);
+        if (result != RELAY_OK || relay_zone_close(relay) != RELAY_OK) {
+            (void)relay_close_all();
+            ESP_LOGE(TAG, "Relay self-test failed on zone relay %u (%d)",
+                     (unsigned)relay, result);
+            return false;
+        }
+        ESP_LOGI(TAG, "Relay self-test: zone relay %u OFF", (unsigned)relay);
+        vTaskDelay(gap_ticks);
+    }
+
+    result = relay_close_all();
+    if (result != RELAY_OK) {
+        ESP_LOGE(TAG, "Relay self-test ended with close-all failure (%d)", result);
+        return false;
+    }
+
+    storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
+                           ZIC_LOG_AUDIT, "relay self-test completed from HMI");
+    ESP_LOGI(TAG, "HMI relay self-test complete; all relays OFF");
+    return true;
+}
+
 static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_command_t *cmd)
 {
     switch (cmd->type) {
@@ -1292,6 +1360,15 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
         }
         break;
     }
+    case ZIC_CMD_RELAY_SELF_TEST:
+        if (zic_runtime_run_relay_self_test(ctx)) {
+            zic_publish_v2_outcome(ctx, cmd->command_id, "relay.self_test", "info",
+                                   "completed", NULL, 0);
+        } else {
+            zic_publish_v2_outcome(ctx, cmd->command_id, "relay.self_test", "warning",
+                                   "rejected", "controller_not_idle", 0);
+        }
+        break;
     default:
         break;
     }
@@ -1781,6 +1858,9 @@ static bool zic_hmi_dispatch(void *context, const hmi_action_t *action)
         break;
     case HMI_ACTION_CLEAR_RAIN_DELAY:
         command.type = ZIC_CMD_CLEAR_RAIN_DELAY;
+        break;
+    case HMI_ACTION_RELAY_SELF_TEST:
+        command.type = ZIC_CMD_RELAY_SELF_TEST;
         break;
     case HMI_ACTION_ACKNOWLEDGE_ALARM:
     case HMI_ACTION_CLEAR_ALARM: {

@@ -148,6 +148,7 @@ typedef enum {
     HMI_UI_ALARM_NEXT,
     HMI_UI_ACKNOWLEDGE_ALARM,
     HMI_UI_CLEAR_ALARM,
+    HMI_UI_RELAY_SELF_TEST,
 } hmi_ui_action_t;
 
 static void set_label_text_if_changed(lv_obj_t *label, const char *text)
@@ -340,6 +341,14 @@ static void hmi_action_event_cb(lv_event_t *event)
             action.alarm_code = s_view_model.alarms[s_selected_alarm].code;
             request_action(&action);
         }
+        break;
+    case HMI_UI_RELAY_SELF_TEST:
+        if (s_view_model.controller_state != 2u || s_view_model.config_safe_mode) {
+            snprintf(s_action_feedback, sizeof(s_action_feedback), "Relay test unavailable: controller not idle");
+            break;
+        }
+        action.type = HMI_ACTION_RELAY_SELF_TEST;
+        request_action(&action);
         break;
     default:
         break;
@@ -607,6 +616,9 @@ static lv_obj_t *create_screen_body(lv_obj_t *parent, hmi_screen_t screen)
         create_action_button(card, "Clear resolved", 372, 180, HMI_UI_CLEAR_ALARM);
         break;
     case HMI_SCREEN_SETTINGS:
+        create_action_button(card, "Relay test", 18, 160, HMI_UI_RELAY_SELF_TEST);
+        create_action_button(card, "STOP", 190, 120, HMI_UI_STOP_ALL);
+        break;
     default:
         break;
     }
