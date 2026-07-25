@@ -72,6 +72,7 @@ static zic_log_entry_t s_log_buffer[ZIC_LOG_PERSIST_CAPACITY];
 #define ZIC_EVENT_OTA_CONFIRMED BIT2
 
 #define ZIC_DEFAULT_BROKER_URI "mqtt://192.168.10.2:1883"
+#define ZIC_NETWORK_HOSTNAME "zmartify-irrigation"
 
 /* Device identity for Zmartify v2 topics; must match the edge registry
  * device_id assigned during onboarding (lowercase, hyphenated). */
@@ -331,6 +332,17 @@ static bool zic_ota_runtime_is_idle(void)
     return idle;
 }
 
+static bool zic_ota_image_is_confirmed(void)
+{
+    const esp_partition_t *running_partition = esp_ota_get_running_partition();
+    esp_ota_img_states_t image_state = ESP_OTA_IMG_UNDEFINED;
+    if (running_partition == NULL ||
+        esp_ota_get_state_partition(running_partition, &image_state) != ESP_OK) {
+        return true;
+    }
+    return image_state != ESP_OTA_IMG_PENDING_VERIFY;
+}
+
 static void zic_remote_ota_task(void *arg)
 {
     char *firmware_url = arg;
@@ -428,6 +440,26 @@ static esp_err_t zic_ota_http_handler(httpd_req_t *request)
     httpd_resp_set_type(request, "text/plain");
     httpd_resp_sendstr(request, "OTA complete; rebooting\n");
     xTaskCreate(zic_ota_restart_task, "ota_restart", 2048, NULL, 5, NULL);
+    return ESP_OK;
+}
+
+static esp_err_t zic_reboot_http_handler(httpd_req_t *request)
+{
+    if (!zic_ota_image_is_confirmed()) {
+        httpd_resp_set_status(request, "409 Conflict");
+        httpd_resp_set_type(request, "text/plain");
+        httpd_resp_sendstr(request, "OTA health confirmation pending\n");
+        return ESP_FAIL;
+    }
+    if (!zic_ota_runtime_is_idle()) {
+        httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Irrigation must be idle for reboot");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Software reboot requested via HTTP");
+    httpd_resp_set_type(request, "text/plain");
+    httpd_resp_sendstr(request, "Rebooting\n");
+    xTaskCreate(zic_ota_restart_task, "http_reboot", 2048, NULL, 5, NULL);
     return ESP_OK;
 }
 
@@ -688,6 +720,19 @@ static bool zic_ota_http_start(void)
         return false;
     }
 
+    const httpd_uri_t reboot_uri = {
+        .uri = "/reboot",
+        .method = HTTP_POST,
+        .handler = zic_reboot_http_handler,
+    };
+    err = httpd_register_uri_handler(s_ota_http_server, &reboot_uri);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Reboot endpoint registration failed: %s", esp_err_to_name(err));
+        httpd_stop(s_ota_http_server);
+        s_ota_http_server = NULL;
+        return false;
+    }
+
     const httpd_uri_t logs_uri = {
         .uri = "/logs",
         .method = HTTP_GET,
@@ -740,7 +785,7 @@ static bool zic_ota_http_start(void)
         return false;
     }
 
-    ESP_LOGI(TAG, "HTTP services ready: POST /ota, GET /logs, GET /health, POST /config/network, POST /weather");
+    ESP_LOGI(TAG, "HTTP services ready: POST /ota, POST /reboot, GET /logs, GET /health, POST /config/network, POST /weather");
     return true;
 }
 
@@ -768,6 +813,8 @@ static void zic_wifi_event_handler(void *arg,
 
 static bool zic_wifi_init(void)
 {
+    esp_netif_t *sta_netif;
+
     if (zic_wifi_ssid[0] == 0) {
         ESP_LOGW(TAG, "Wi-Fi credentials not provisioned; run scripts/configure-wifi.sh");
         return false;
@@ -779,8 +826,14 @@ static bool zic_wifi_init(void)
         return false;
     }
 
-    if (esp_netif_create_default_wifi_sta() == NULL) {
+    sta_netif = esp_netif_create_default_wifi_sta();
+    if (sta_netif == NULL) {
         ESP_LOGE(TAG, "Failed to create Wi-Fi STA interface");
+        return false;
+    }
+    err = esp_netif_set_hostname(sta_netif, ZIC_NETWORK_HOSTNAME);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set Wi-Fi hostname: %s", esp_err_to_name(err));
         return false;
     }
 
@@ -807,7 +860,8 @@ static bool zic_wifi_init(void)
         return false;
     }
 
-    ESP_LOGI(TAG, "Wi-Fi STA started for SSID '%s'", (const char *)zic_wifi_ssid);
+    ESP_LOGI(TAG, "Wi-Fi STA started for SSID '%s' as '%s'",
+             (const char *)zic_wifi_ssid, ZIC_NETWORK_HOSTNAME);
     return true;
 }
 
