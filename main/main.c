@@ -608,6 +608,33 @@ static esp_err_t zic_sd_card_mount(bool format_if_mount_failed)
     return ESP_OK;
 }
 
+static void zic_sd_card_storage_snapshot(zic_v2_storage_t *storage)
+{
+    if (storage == NULL) {
+        return;
+    }
+    memset(storage, 0, sizeof(*storage));
+    storage->sd_card_mount_point = ZIC_SD_CARD_MOUNT_POINT;
+    storage->sd_card_last_error = s_sd_card_last_error;
+
+    if (s_sd_card == NULL) {
+        (void)zic_sd_card_mount(false);
+    }
+
+    storage->sd_card_mounted = s_sd_card != NULL;
+    if (!storage->sd_card_mounted) {
+        return;
+    }
+
+    FATFS *fs = NULL;
+    DWORD free_clusters = 0;
+    if (f_getfree(ZIC_SD_CARD_MOUNT_POINT, &free_clusters, &fs) == FR_OK && fs != NULL) {
+        storage->sd_card_total_bytes = (uint64_t)(fs->n_fatent - 2) * fs->csize * 512u;
+        storage->sd_card_free_bytes = (uint64_t)free_clusters * fs->csize * 512u;
+    }
+    storage->sd_card_name = s_sd_card->cid.name;
+}
+
 static esp_err_t zic_sd_card_status_http_handler(httpd_req_t *request)
 {
     (void)zic_sd_card_mount(false);
@@ -2062,7 +2089,9 @@ static void zic_telemetry_task(void *arg)
                 .wind_mps = (double)s_ctx.weather_snapshot.wind_speed_mps,
                 .eto_mm = (double)s_ctx.et_output.daily_et_mm,
             };
-            if (zic_v2_build_reported_state(v2_payload, sizeof(v2_payload), stamp, NULL, &hyd, NULL, &wx)) {
+            zic_v2_storage_t storage;
+            zic_sd_card_storage_snapshot(&storage);
+            if (zic_v2_build_reported_state(v2_payload, sizeof(v2_payload), stamp, NULL, &hyd, NULL, &wx, &storage)) {
                 mqtt_transport_publish(&s_ctx.mqtt_transport,
                                        s_v2_state_topic,
                                        v2_payload,

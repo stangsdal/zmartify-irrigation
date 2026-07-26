@@ -206,7 +206,8 @@ bool zic_v2_build_reported_state(char *out,
                                  const char *firmware_version,
                                  const zic_v2_hydraulics_t *hydraulics,
                                  const zic_v2_power_t *power,
-                                 const zic_v2_weather_t *weather)
+                                 const zic_v2_weather_t *weather,
+                                 const zic_v2_storage_t *storage)
 {
     if (out == NULL || out_len == 0 || source_timestamp == NULL) {
         return false;
@@ -300,6 +301,32 @@ bool zic_v2_build_reported_state(char *out,
         first = first && weather->wind_mps < 0.0;
         if (weather->eto_mm >= 0.0 &&
             !zic_v2_appendf(out, out_len, &pos, "%s\"eto_mm\":%.2f", first ? "" : ",", weather->eto_mm)) {
+            return false;
+        }
+        if (!zic_v2_appendf(out, out_len, &pos, "}}")) {
+            return false;
+        }
+    }
+
+    if (storage != NULL) {
+        if (!zic_v2_appendf(out, out_len, &pos,
+                            ",\"storage\":{\"sd_card\":{\"state\":\"%s\",\"mounted\":%s,\"total_bytes\":%llu,\"free_bytes\":%llu",
+                            storage->sd_card_mounted ? "mounted" : "unavailable",
+                            storage->sd_card_mounted ? "true" : "false",
+                            (unsigned long long)storage->sd_card_total_bytes,
+                            (unsigned long long)storage->sd_card_free_bytes)) {
+            return false;
+        }
+        if (storage->sd_card_mount_point != NULL && storage->sd_card_mount_point[0] != '\0' &&
+            !zic_v2_appendf(out, out_len, &pos, ",\"mount_point\":\"%s\"", storage->sd_card_mount_point)) {
+            return false;
+        }
+        if (storage->sd_card_name != NULL && storage->sd_card_name[0] != '\0' &&
+            !zic_v2_appendf(out, out_len, &pos, ",\"card_name\":\"%s\"", storage->sd_card_name)) {
+            return false;
+        }
+        if (storage->sd_card_last_error != NULL && storage->sd_card_last_error[0] != '\0' &&
+            !zic_v2_appendf(out, out_len, &pos, ",\"last_error\":\"%s\"", storage->sd_card_last_error)) {
             return false;
         }
         if (!zic_v2_appendf(out, out_len, &pos, "}}")) {

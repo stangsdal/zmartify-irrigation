@@ -58,6 +58,15 @@ typedef struct {
     double eto_mm;           /* < 0 to omit */
 } zic_v2_weather_t;
 
+typedef struct {
+    bool sd_card_mounted;
+    uint64_t sd_card_total_bytes;
+    uint64_t sd_card_free_bytes;
+    const char *sd_card_mount_point;
+    const char *sd_card_name;
+    const char *sd_card_last_error;
+} zic_v2_storage_t;
+
 #define ZIC_V2_OMIT (-1000.0)
 #define ZIC_V2_COMMAND_ID_MAX 40u
 #define ZIC_V2_DEDUPE_CAPACITY 16u
@@ -127,7 +136,8 @@ bool zic_v2_build_reported_state(char *out,
                                  const char *firmware_version,
                                  const zic_v2_hydraulics_t *hydraulics,
                                  const zic_v2_power_t *power,
-                                 const zic_v2_weather_t *weather);
+                                 const zic_v2_weather_t *weather,
+                                 const zic_v2_storage_t *storage);
 
 /**
  * Build a schema-conformant v2 irrigation outcome payload.
