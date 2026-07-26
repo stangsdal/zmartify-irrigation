@@ -67,6 +67,7 @@ typedef enum {
     ZIC_V2_ACTION_ZONE_STOP,
     ZIC_V2_ACTION_STOP_ALL,
     ZIC_V2_ACTION_RAIN_DELAY,
+    ZIC_V2_ACTION_CONFIG_NETWORK,
 } zic_v2_command_action_t;
 
 typedef enum {

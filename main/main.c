@@ -88,7 +88,8 @@ typedef enum {
     ZIC_CMD_SET_RAIN_DELAY,
     ZIC_CMD_CLEAR_RAIN_DELAY,
     ZIC_CMD_TRIGGER_OTA,
-    ZIC_CMD_RELAY_SELF_TEST
+    ZIC_CMD_RELAY_SELF_TEST,
+    ZIC_CMD_UPDATE_NETWORK_CONFIG
 } zic_runtime_command_type_t;
 
 typedef struct {
@@ -99,6 +100,7 @@ typedef struct {
     uint16_t rain_delay_hours;
     char command_id[ZIC_V2_COMMAND_ID_MAX];
     char ota_url[160];
+    config_network_t network_config;
 } zic_runtime_command_t;
 
 typedef struct {
@@ -1008,6 +1010,29 @@ static bool zic_json_has_only(const cJSON *object,
     return true;
 }
 
+static bool zic_json_has_allowed(const cJSON *object,
+                                 const char *const *allowed,
+                                 size_t allowed_count)
+{
+    if (!cJSON_IsObject(object)) {
+        return false;
+    }
+    const cJSON *item = NULL;
+    cJSON_ArrayForEach(item, object) {
+        bool found = false;
+        for (size_t index = 0; index < allowed_count; ++index) {
+            if (item->string != NULL && strcmp(item->string, allowed[index]) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static void zic_mqtt_on_message(const char *topic,
                                 size_t topic_len,
                                 const char *payload,
@@ -1097,6 +1122,39 @@ static void zic_mqtt_on_message(const char *topic,
             v2_command.rain_delay_hours = value;
             cmd.type = value == 0u ? ZIC_CMD_CLEAR_RAIN_DELAY : ZIC_CMD_SET_RAIN_DELAY;
             cmd.rain_delay_hours = (uint16_t)value;
+        } else if (strcmp(action, "config/network") == 0) {
+            static const char *const fields[] = {
+                "mqtt_broker_uri", "mqtt_uri", "mqtt_username", "mqtt_password",
+                "mqtt_tls_enabled", "mqtt_port", "ntp_server", "timezone"
+            };
+            config_network_t network;
+            v2_command.action = ZIC_V2_ACTION_CONFIG_NETWORK;
+            schema_valid = schema_valid && zic_json_has_allowed(parameters, fields,
+                sizeof(fields) / sizeof(fields[0])) &&
+                config_get_network(&network) == CFG_OK;
+            if (schema_valid) {
+                schema_valid = schema_valid && zic_json_copy_string(parameters, "mqtt_broker_uri", network.mqtt_broker_uri, sizeof(network.mqtt_broker_uri));
+                schema_valid = schema_valid && zic_json_copy_string(parameters, "mqtt_uri", network.mqtt_broker_uri, sizeof(network.mqtt_broker_uri));
+                schema_valid = schema_valid && zic_json_copy_string(parameters, "mqtt_username", network.mqtt_username, sizeof(network.mqtt_username));
+                schema_valid = schema_valid && zic_json_copy_string(parameters, "mqtt_password", network.mqtt_password, sizeof(network.mqtt_password));
+                schema_valid = schema_valid && zic_json_copy_string(parameters, "ntp_server", network.ntp_server, sizeof(network.ntp_server));
+                schema_valid = schema_valid && zic_json_copy_string(parameters, "timezone", network.timezone, sizeof(network.timezone));
+                const cJSON *tls = cJSON_GetObjectItemCaseSensitive(parameters, "mqtt_tls_enabled");
+                if (cJSON_IsBool(tls)) {
+                    network.mqtt_tls_enabled = cJSON_IsTrue(tls);
+                }
+                const cJSON *port = cJSON_GetObjectItemCaseSensitive(parameters, "mqtt_port");
+                if (port != NULL) {
+                    schema_valid = schema_valid && cJSON_IsNumber(port) &&
+                        port->valuedouble >= 0 && port->valuedouble <= 65535 &&
+                        port->valuedouble == (double)(uint16_t)port->valuedouble;
+                    if (schema_valid) {
+                        network.mqtt_port = (uint16_t)port->valuedouble;
+                    }
+                }
+            }
+            cmd.type = ZIC_CMD_UPDATE_NETWORK_CONFIG;
+            cmd.network_config = network;
         } else {
             schema_valid = false;
         }
@@ -1452,6 +1510,15 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
         storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
                        ZIC_LOG_AUDIT, "rain delay cleared");
         zic_publish_v2_outcome(ctx, cmd->command_id, "rain.delay_cleared", "info", "completed", NULL, 0);
+        break;
+    case ZIC_CMD_UPDATE_NETWORK_CONFIG:
+        if (config_set_network(&cmd->network_config) == CFG_OK && config_manager_commit() == CFG_OK) {
+            storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
+                                   ZIC_LOG_AUDIT, "network config updated by command");
+            zic_publish_v2_outcome(ctx, cmd->command_id, "config.updated", "info", "completed", "reboot_required", 0);
+        } else {
+            zic_publish_v2_outcome(ctx, cmd->command_id, "config.rejected", "warning", "rejected", "config_save_failed", 0);
+        }
         break;
     case ZIC_CMD_TRIGGER_OTA: {
         if (cmd->ota_url[0] == '\0' || !irrigation_engine_is_idle(&ctx->engine) ||
