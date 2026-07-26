@@ -34,4 +34,5 @@ bool irrigation_engine_stop_zone(irrigation_engine_t *engine, uint8_t zone_id);
 bool irrigation_engine_stop_all(irrigation_engine_t *engine);
 bool irrigation_engine_tick(irrigation_engine_t *engine, uint64_t now_ms);
 bool irrigation_engine_is_idle(const irrigation_engine_t *engine);
+bool irrigation_engine_is_running(const irrigation_engine_t *engine);
 uint32_t irrigation_engine_remaining_seconds(const irrigation_engine_t *engine, uint64_t now_ms);

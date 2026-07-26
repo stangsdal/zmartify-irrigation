@@ -1327,8 +1327,11 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
 {
     switch (cmd->type) {
     case ZIC_CMD_START_ZONE: {
+        bool was_running = irrigation_engine_is_running(&ctx->engine);
+        bool same_zone = was_running && ctx->engine.active_zone_id == cmd->zone_id;
         if (zic_runtime_start_zone(ctx, cmd->zone_id, cmd->runtime_seconds)) {
-            zic_publish_v2_outcome(ctx, cmd->command_id, "run.started", "info", "completed", NULL, cmd->zone_id);
+            const char *detail = same_zone ? "runtime_refreshed" : was_running ? "zone_transition" : NULL;
+            zic_publish_v2_outcome(ctx, cmd->command_id, "run.started", "info", "completed", detail, cmd->zone_id);
         } else {
             zic_publish_v2_outcome(ctx, cmd->command_id, "run.rejected", "warning", "rejected",
                                    "controller_not_idle", cmd->zone_id);
@@ -1865,6 +1868,10 @@ static bool zic_hmi_snapshot(void *context, hmi_view_model_t *view_model)
     snapshot.time_synchronized = hal_time_is_synced();
     snapshot.storage_ready = ctx->storage_ready && ctx->storage_last_write_ok;
     snapshot.config_safe_mode = config_is_safe_mode();
+    snapshot.master_valve_on = relay_master_is_open();
+    for (uint8_t relay = RELAY_ZONE_FIRST; relay <= RELAY_ZONE_LAST; ++relay) {
+        snapshot.zone_valve_on[relay - RELAY_ZONE_FIRST] = relay_zone_is_open(relay);
+    }
     for (size_t index = 0; index < ZIC_MAX_ACTIVE_ALARMS &&
          snapshot.alarm_count < HMI_MAX_VISIBLE_ALARMS; ++index) {
         const zic_alarm_t *alarm = &ctx->alarm_manager.alarms[index];
@@ -1877,6 +1884,12 @@ static bool zic_hmi_snapshot(void *context, hmi_view_model_t *view_model)
         alarm_view->state = (uint8_t)alarm->state;
     }
     xSemaphoreGive(s_ctx_lock);
+
+    wifi_ap_record_t ap_info = {0};
+    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+        snapshot.wifi_connected = true;
+        snapshot.wifi_rssi_dbm = ap_info.rssi;
+    }
 
     uint32_t rain_delay = 0;
     (void)persistent_store_get_u32("rain_delay_h", &rain_delay, 0u);

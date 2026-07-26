@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #define HMI_MAX_VISIBLE_ALARMS 8u
+#define HMI_ZONE_VALVE_COUNT 15u
 
 typedef enum {
     HMI_SCREEN_DASHBOARD = 0,
@@ -60,6 +61,10 @@ typedef struct {
     bool time_synchronized;
     bool storage_ready;
     bool config_safe_mode;
+    bool master_valve_on;
+    bool zone_valve_on[HMI_ZONE_VALVE_COUNT];
+    bool wifi_connected;
+    int8_t wifi_rssi_dbm;
     hmi_alarm_view_t alarms[HMI_MAX_VISIBLE_ALARMS];
     uint8_t alarm_count;
 } hmi_view_model_t;

@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 static const char *TAG = "hmi_lvgl";
 
@@ -273,6 +274,71 @@ static void set_label_text_if_changed(lv_obj_t *label, const char *text)
     }
 
     lv_label_set_text(label, text);
+}
+
+static uint8_t wifi_signal_bars(const hmi_view_model_t *view_model)
+{
+    if (view_model == NULL || !view_model->wifi_connected) {
+        return 0u;
+    }
+    if (view_model->wifi_rssi_dbm >= -55) {
+        return 4u;
+    }
+    if (view_model->wifi_rssi_dbm >= -67) {
+        return 3u;
+    }
+    if (view_model->wifi_rssi_dbm >= -78) {
+        return 2u;
+    }
+    return 1u;
+}
+
+static void append_zone_status(char *buffer, size_t buffer_size, size_t *used, uint8_t zone)
+{
+    if (buffer == NULL || used == NULL || *used >= buffer_size || zone == 0u ||
+        zone > HMI_ZONE_VALVE_COUNT) {
+        return;
+    }
+
+    int written = snprintf(&buffer[*used],
+                           buffer_size - *used,
+                           "  %02u:%s",
+                           (unsigned)zone,
+                           s_view_model.zone_valve_on[zone - 1u] ? "ON" : "OFF");
+    if (written < 0) {
+        return;
+    }
+    *used += (size_t)written < (buffer_size - *used) ? (size_t)written : buffer_size - *used - 1u;
+}
+
+static void format_valve_status(char *upper, size_t upper_size, char *lower, size_t lower_size)
+{
+    if (upper == NULL || lower == NULL || upper_size == 0u || lower_size == 0u) {
+        return;
+    }
+
+    int written = snprintf(upper,
+                           upper_size,
+                           "Master:%s",
+                           s_view_model.master_valve_on ? "ON" : "OFF");
+    if (written < 0) {
+        upper[0] = '\0';
+        return;
+    }
+    size_t used = (size_t)written < upper_size ? (size_t)written : upper_size - 1u;
+    for (uint8_t zone = 1u; zone <= 8u; ++zone) {
+        append_zone_status(upper, upper_size, &used, zone);
+    }
+
+    written = snprintf(lower, lower_size, "Zones:");
+    if (written < 0) {
+        lower[0] = '\0';
+        return;
+    }
+    used = (size_t)written < lower_size ? (size_t)written : lower_size - 1u;
+    for (uint8_t zone = 9u; zone <= HMI_ZONE_VALVE_COUNT; ++zone) {
+        append_zone_status(lower, lower_size, &used, zone);
+    }
 }
 
 static const char *controller_state_name(uint8_t state)
@@ -859,11 +925,11 @@ static void update_view_labels(void)
 
 static void update_status_labels(void)
 {
-    char uptime_buf[64];
-    char system_buf[96];
+    char time_buf[64];
     char zone_buf[64];
-    char touch_buf[64];
-    char perf_buf[64];
+    char valve_upper_buf[128];
+    char valve_lower_buf[128];
+    char wifi_buf[64];
 
     if (s_snapshot != NULL) {
         hmi_view_model_t snapshot;
@@ -873,69 +939,44 @@ static void update_status_labels(void)
     }
     update_view_labels();
 
-    if (!s_last_touch.valid)
-    {
-        snprintf(touch_buf, sizeof(touch_buf), "Touch: n/a");
-    }
-    else
-    {
-        snprintf(touch_buf,
-                 sizeof(touch_buf),
-                 "Touch: %s (%d,%d)",
-                 s_last_touch.pressed ? "DOWN" : "UP",
-                 (int)s_last_touch.x,
-                 (int)s_last_touch.y);
-    }
-
     int64_t now_us = esp_timer_get_time();
     if (s_last_perf_us == 0)
     {
         s_last_perf_us = now_us;
     }
 
-    int64_t dt_us = now_us - s_last_perf_us;
-    if (dt_us < 1000)
-    {
-        dt_us = 1000;
-    }
-
     uint32_t flush_now = s_flush_count;
-    uint32_t flush_delta = flush_now - s_last_flush_count;
-    float fps = ((float)flush_delta * 1000000.0f) / (float)dt_us;
-    float frame_ms = 1000.0f / (fps > 0.01f ? fps : 0.01f);
 
-    uint32_t uptime_s = (uint32_t)(now_us / 1000000LL);
-    uint32_t up_h = uptime_s / 3600U;
-    uint32_t up_m = (uptime_s % 3600U) / 60U;
-    uint32_t up_s = uptime_s % 60U;
-
-    snprintf(uptime_buf,
-             sizeof(uptime_buf),
-             "Uptime: %02u:%02u:%02u",
-             (unsigned int)up_h,
-             (unsigned int)up_m,
-             (unsigned int)up_s);
-    snprintf(system_buf, sizeof(system_buf), "System: Online  |  Display: 1024x600 RGB  |  Touch: GT911");
+    time_t now = time(NULL);
+    struct tm local_time;
+    if (s_view_model.time_synchronized && localtime_r(&now, &local_time) != NULL) {
+        strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", &local_time);
+    } else {
+        snprintf(time_buf, sizeof(time_buf), "Time: unsynchronized");
+    }
     snprintf(zone_buf,
              sizeof(zone_buf),
              "Screen: %s  |  %s",
              s_screen_titles[s_active_screen],
              screen_summary(s_active_screen));
-    if (flush_delta == 0)
-    {
-        snprintf(perf_buf, sizeof(perf_buf), "Render: idle (no flush)");
-    }
-    else
-    {
-        snprintf(perf_buf, sizeof(perf_buf), "Render: %.1f fps (%.1f ms)", fps, frame_ms);
-    }
+    format_valve_status(valve_upper_buf, sizeof(valve_upper_buf),
+                        valve_lower_buf, sizeof(valve_lower_buf));
+    uint8_t bars = wifi_signal_bars(&s_view_model);
+    snprintf(wifi_buf,
+             sizeof(wifi_buf),
+             "WiFi: [%c%c%c%c] %s",
+             bars >= 1u ? '|' : '.',
+             bars >= 2u ? '|' : '.',
+             bars >= 3u ? '|' : '.',
+             bars >= 4u ? '|' : '.',
+             s_view_model.wifi_connected ? "Online" : "Offline");
 
-    set_label_text_if_changed(s_label_uptime, uptime_buf);
+    set_label_text_if_changed(s_label_uptime, time_buf);
     set_label_text_if_changed(s_label_subtitle, s_screen_titles[s_active_screen]);
-    set_label_text_if_changed(s_label_system, system_buf);
+    set_label_text_if_changed(s_label_system, wifi_buf);
     set_label_text_if_changed(s_label_zone, zone_buf);
-    set_label_text_if_changed(s_label_touch, touch_buf);
-    set_label_text_if_changed(s_label_perf, perf_buf);
+    set_label_text_if_changed(s_label_touch, valve_upper_buf);
+    set_label_text_if_changed(s_label_perf, valve_lower_buf);
     if (s_view_model.config_safe_mode) {
         set_label_text_if_changed(s_label_note, "CONFIG SAFE MODE");
         lv_obj_set_style_text_color(s_label_note, lv_color_hex(0xD1495B), 0);
@@ -984,14 +1025,14 @@ static void create_home_screen(void)
     lv_obj_align_to(s_label_subtitle, s_label_title, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 4);
 
     s_label_uptime = lv_label_create(header);
-    lv_label_set_text(s_label_uptime, "Uptime: 00:00:00");
+    lv_label_set_text(s_label_uptime, "Time: unsynchronized");
     lv_obj_set_style_text_color(s_label_uptime, lv_color_hex(0xF1FAEE), 0);
     lv_obj_align(s_label_uptime, LV_ALIGN_TOP_RIGHT, -18, 12);
 
     s_label_system = lv_label_create(header);
     lv_label_set_long_mode(s_label_system, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(s_label_system, 420);
-    lv_label_set_text(s_label_system, "System: Online  |  Display: 1024x600 RGB  |  Touch: GT911");
+    lv_obj_set_width(s_label_system, 260);
+    lv_label_set_text(s_label_system, "WiFi: [....] Offline");
     lv_obj_set_style_text_color(s_label_system, lv_color_hex(0xDDEBF7), 0);
     lv_obj_align(s_label_system, LV_ALIGN_BOTTOM_RIGHT, -18, -10);
 
@@ -1073,26 +1114,26 @@ static void create_home_screen(void)
     lv_obj_set_style_anim_time(footer, 0, LV_PART_MAIN | LV_STATE_ANY);
 
     s_label_zone = lv_label_create(footer);
-    lv_obj_set_size(s_label_zone, LCD_H_RES - 92, 20);
+    lv_obj_set_size(s_label_zone, 650, 20);
     lv_obj_align(s_label_zone, LV_ALIGN_TOP_LEFT, 18, 8);
     lv_label_set_text(s_label_zone, "Screen: Dashboard  |  Operational overview and quick actions");
     lv_obj_set_style_text_color(s_label_zone, lv_color_hex(0x2B2D42), 0);
 
     s_label_touch = lv_label_create(footer);
-    lv_obj_set_size(s_label_touch, 270, 18);
-    lv_obj_align(s_label_touch, LV_ALIGN_TOP_LEFT, 18, 34);
-    lv_label_set_text(s_label_touch, "Touch: n/a");
+    lv_obj_set_size(s_label_touch, LCD_H_RES - 92, 18);
+    lv_obj_align(s_label_touch, LV_ALIGN_TOP_LEFT, 18, 30);
+    lv_label_set_text(s_label_touch, "Master:OFF  01:OFF  02:OFF  03:OFF  04:OFF  05:OFF  06:OFF  07:OFF  08:OFF");
     lv_obj_set_style_text_color(s_label_touch, lv_color_hex(0x005F73), 0);
 
     s_label_perf = lv_label_create(footer);
-    lv_obj_set_size(s_label_perf, 260, 18);
-    lv_obj_align(s_label_perf, LV_ALIGN_TOP_LEFT, 310, 34);
-    lv_label_set_text(s_label_perf, "Render: collecting...");
-    lv_obj_set_style_text_color(s_label_perf, lv_color_hex(0x9B2226), 0);
+    lv_obj_set_size(s_label_perf, LCD_H_RES - 92, 18);
+    lv_obj_align(s_label_perf, LV_ALIGN_TOP_LEFT, 18, 50);
+    lv_label_set_text(s_label_perf, "Zones:  09:OFF  10:OFF  11:OFF  12:OFF  13:OFF  14:OFF  15:OFF");
+    lv_obj_set_style_text_color(s_label_perf, lv_color_hex(0x005F73), 0);
 
     s_label_note = lv_label_create(footer);
-    lv_obj_set_size(s_label_note, LCD_H_RES - 92 - 592, 18);
-    lv_obj_align(s_label_note, LV_ALIGN_TOP_LEFT, 592, 34);
+    lv_obj_set_size(s_label_note, 260, 18);
+    lv_obj_align(s_label_note, LV_ALIGN_TOP_RIGHT, -18, 8);
     lv_label_set_text(s_label_note, screen_summary(s_active_screen));
     lv_obj_set_style_text_color(s_label_note, lv_color_hex(0x4A4E69), 0);
 

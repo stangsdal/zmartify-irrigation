@@ -44,10 +44,66 @@ bool irrigation_engine_start_zone(irrigation_engine_t *engine,
                                   uint32_t runtime_seconds,
                                   uint64_t now_ms)
 {
-    if (engine == 0 || engine->phase != IRRIGATION_PHASE_IDLE ||
-        engine->controller.state != ZIC_CTRL_IDLE ||
+    if (engine == 0 ||
         relay_index < RELAY_ZONE_FIRST || relay_index > RELAY_ZONE_LAST ||
         runtime_seconds == 0) {
+        return false;
+    }
+
+    if (engine->phase != IRRIGATION_PHASE_IDLE) {
+        if (engine->phase == IRRIGATION_PHASE_FAULT ||
+            engine->controller.state != ZIC_CTRL_RUNNING) {
+            return false;
+        }
+
+        if (engine->active_zone_id == zone_id) {
+            engine->active_relay_index = relay_index;
+            engine->requested_runtime_seconds = runtime_seconds;
+            if (engine->phase == IRRIGATION_PHASE_RUNNING) {
+                engine->deadline_ms = now_ms + ((uint64_t)runtime_seconds * 1000u);
+            } else if (engine->phase == IRRIGATION_PHASE_MASTER_CLOSE_DELAY) {
+                if (relay_zone_open(engine->active_relay_index) != RELAY_OK) {
+                    return fail_safe(engine);
+                }
+                engine->phase = IRRIGATION_PHASE_RUNNING;
+                engine->deadline_ms = now_ms + ((uint64_t)runtime_seconds * 1000u);
+            }
+            return true;
+        }
+
+        uint8_t previous_zone_id = engine->active_zone_id;
+        if (engine->phase == IRRIGATION_PHASE_RUNNING &&
+            relay_zone_close(engine->active_relay_index) != RELAY_OK) {
+            return fail_safe(engine);
+        }
+        if (!zone_manager_stop(&engine->zone_manager, previous_zone_id) ||
+            !zone_manager_start(&engine->zone_manager, zone_id)) {
+            return fail_safe(engine);
+        }
+
+        engine->active_zone_id = zone_id;
+        engine->active_relay_index = relay_index;
+        engine->requested_runtime_seconds = runtime_seconds;
+
+        if (!zic_controller_apply_event(&engine->controller, ZIC_EV_START_ZONE,
+                                        (int8_t)zone_id)) {
+            return fail_safe(engine);
+        }
+
+        if (engine->phase == IRRIGATION_PHASE_MASTER_OPEN_DELAY) {
+            engine->deadline_ms = now_ms + MASTER_OPEN_DELAY_MS;
+            return true;
+        }
+
+        if (relay_zone_open(engine->active_relay_index) != RELAY_OK) {
+            return fail_safe(engine);
+        }
+        engine->phase = IRRIGATION_PHASE_RUNNING;
+        engine->deadline_ms = now_ms + ((uint64_t)runtime_seconds * 1000u);
+        return true;
+    }
+
+    if (engine->controller.state != ZIC_CTRL_IDLE) {
         return false;
     }
 
@@ -135,6 +191,11 @@ bool irrigation_engine_tick(irrigation_engine_t *engine, uint64_t now_ms)
 bool irrigation_engine_is_idle(const irrigation_engine_t *engine)
 {
     return engine != 0 && engine->phase == IRRIGATION_PHASE_IDLE;
+}
+
+bool irrigation_engine_is_running(const irrigation_engine_t *engine)
+{
+    return engine != 0 && engine->phase == IRRIGATION_PHASE_RUNNING;
 }
 
 uint32_t irrigation_engine_remaining_seconds(const irrigation_engine_t *engine, uint64_t now_ms)
