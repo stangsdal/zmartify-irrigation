@@ -54,7 +54,7 @@ then drive outputs through command `0x03` (`IO_EXTENSION_IO_OUTPUT_ADDR`). Pin m
 | IO1 | Touch (GT911) reset |
 | IO2 | LCD backlight on/off |
 | IO3 | LCD reset |
-| IO4 | SD card CS |
+| IO4 / EXIO4 | SD card CS / TF card enable, active low |
 | IO5 | USB (0) / CAN (1) select |
 
 Registers: mode `0x02`, output `0x03`, input `0x04`, PWM `0x05`, ADC `0x06`. The backlight must be
@@ -62,15 +62,19 @@ turned on through this chip (IO2); there is no direct backlight GPIO (panel `BK_
 
 ## SD card
 
-The 7B microSD socket uses SDMMC 1-bit mode, not SDSPI. Match Waveshare's examples:
+The 7B TF/microSD socket exposes the same three ESP32-S3 pins that board pinouts often label as
+SPI `MOSI`, `SCK`, and `MISO`. Waveshare's ESP-IDF examples mount it in SDMMC 1-bit mode, where those
+same physical pins are used as `CMD`, `CLK`, and `D0`:
 
-| SD signal | ESP32-S3 GPIO |
-| --- | --- |
-| CLK | GPIO12 |
-| CMD | GPIO11 |
-| D0 | GPIO13 |
+| TF/SPI label | SDMMC 1-bit signal | ESP32-S3 GPIO |
+| --- | --- | --- |
+| MOSI / TF input | CMD | GPIO11 |
+| SCK / TF clock | CLK | GPIO12 |
+| MISO / TF output | D0 | GPIO13 |
 
-Before mounting, drive IO expander IO4 high. Do not use a native ESP32 GPIO as SD CS for this board.
+The TF-card enable pin is IO expander IO4/EXIO4 and is active low. For the SDMMC 1-bit mount path,
+drive IO4 high before mounting so the card is not selected in SPI mode. Do not use a native ESP32 GPIO
+as SD CS for this board.
 
 ## Touch
 
