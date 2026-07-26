@@ -24,6 +24,8 @@ esac
 
 cd "$PROJECT_ROOT"
 
+source "$SCRIPT_DIR/esp-idf-env.sh"
+
 check_blockers()
 {
     if [[ ! -f "$BLOCKERS_FILE" ]]; then

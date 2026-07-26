@@ -4,16 +4,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-IDF_EXPORT="${IDF_EXPORT:-$HOME/.espressif/v6.0.1/esp-idf/export.sh}"
 PORT="${1:-}"
 CREDENTIALS_FILE="$PROJECT_ROOT/main/wifi_credentials.local.h"
 
 cd "$PROJECT_ROOT"
-
-if [[ ! -f "$IDF_EXPORT" ]]; then
-    echo "Error: ESP-IDF export script not found: $IDF_EXPORT"
-    exit 1
-fi
 
 if [[ -z "$PORT" ]]; then
     shopt -s nullglob
@@ -61,7 +55,7 @@ umask 077
 
 unset wifi_password
 
-source "$IDF_EXPORT"
+source "$SCRIPT_DIR/esp-idf-env.sh"
 idf.py -B build clean
 idf.py -B build build
 idf.py -B build -p "$PORT" -b 921600 flash

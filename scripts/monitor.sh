@@ -12,6 +12,8 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 cd "$PROJECT_ROOT"
 
+source "$SCRIPT_DIR/esp-idf-env.sh"
+
 PORT="${1:-}"
 BAUD="${2:-115200}"
 

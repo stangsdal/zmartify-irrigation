@@ -13,6 +13,8 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 cd "$PROJECT_ROOT"
 
+source "$SCRIPT_DIR/esp-idf-env.sh"
+
 METHOD="${1:-usb}"
 PARAM="${2:-}"
 

@@ -4,17 +4,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-IDF_EXPORT="${IDF_EXPORT:-$HOME/.espressif/v6.0.1/esp-idf/export.sh}"
 PORT="${1:-}"
 
 cd "$PROJECT_ROOT"
 
-if [[ ! -f "$IDF_EXPORT" ]]; then
-    echo "Error: ESP-IDF export script not found: $IDF_EXPORT"
-    exit 1
-fi
-
-source "$IDF_EXPORT"
+source "$SCRIPT_DIR/esp-idf-env.sh"
 
 if [[ -z "$PORT" ]]; then
     shopt -s nullglob
