@@ -214,7 +214,7 @@ bool zic_v2_build_reported_state(char *out,
 
     size_t pos = 0;
     if (!zic_v2_appendf(out, out_len, &pos,
-                        "{\"schema_version\":\"2.0\",\"source_timestamp\":\"%s\"",
+                        "{\"schema_version\":\"2.0\",\"source_timestamp\":\"%s\",\"online\":true,\"mqtt_connected\":true",
                         source_timestamp)) {
         return false;
     }

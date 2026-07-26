@@ -17,6 +17,10 @@ typedef struct {
     bool flow_sensor_available;
     bool pressure_sensor_available;
     bool mqtt_connected;
+    uint32_t mqtt_connect_count;
+    uint32_t mqtt_disconnect_count;
+    uint32_t mqtt_error_count;
+    char mqtt_last_error[128];
     bool time_synchronized;
     uint8_t critical_alarms;
     uint8_t heap_utilisation_pct;

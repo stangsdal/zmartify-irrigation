@@ -215,7 +215,16 @@ static bool zic_diagnostics_snapshot(void *context,
     policy_input->core_ready = (runtime_bits & ZIC_EVENT_ENGINE_READY) != 0 &&
         (runtime_bits & ZIC_EVENT_FAULT) == 0;
     policy_input->pressure_sensor_available = ctx->pressure_available;
-    policy_input->mqtt_connected = mqtt_transport_is_connected(&ctx->mqtt_transport);
+    mqtt_transport_status_t mqtt_status = {0};
+    mqtt_transport_get_status(&ctx->mqtt_transport, &mqtt_status);
+    policy_input->mqtt_connected = mqtt_status.connected;
+    policy_input->mqtt_connect_count = mqtt_status.connect_count;
+    policy_input->mqtt_disconnect_count = mqtt_status.disconnect_count;
+    policy_input->mqtt_error_count = mqtt_status.error_count;
+    (void)snprintf(policy_input->mqtt_last_error,
+                   sizeof(policy_input->mqtt_last_error),
+                   "%s",
+                   mqtt_status.last_error);
     policy_input->time_synchronized = hal_time_is_synced();
     policy_input->storage_ready = ctx->storage_ready;
     policy_input->storage_last_write_ok = ctx->storage_last_write_ok;

@@ -36,8 +36,20 @@ typedef struct {
 } mqtt_transport_config_t;
 
 typedef struct {
+    bool connected;
+    uint32_t connect_count;
+    uint32_t disconnect_count;
+    uint32_t error_count;
+    char last_error[128];
+} mqtt_transport_status_t;
+
+typedef struct {
     esp_mqtt_client_handle_t client;
     bool connected;
+    uint32_t connect_count;
+    uint32_t disconnect_count;
+    uint32_t error_count;
+    char last_error[128];
     const char **subscribe_topics;
     size_t subscribe_topic_count;
     mqtt_transport_message_cb_t on_message;
@@ -53,3 +65,4 @@ bool mqtt_transport_publish(mqtt_transport_t *transport,
                             int qos,
                             bool retain);
 bool mqtt_transport_is_connected(const mqtt_transport_t *transport);
+void mqtt_transport_get_status(const mqtt_transport_t *transport, mqtt_transport_status_t *out);

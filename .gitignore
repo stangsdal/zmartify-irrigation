@@ -4,6 +4,7 @@ build-host-release/
 build-release/
 build-step3/
 build-ota-rollback-test/
+build-copilot-diag/
 managed_components/
 .vscode/
 .DS_Store
