@@ -625,11 +625,12 @@ static void zic_sd_card_storage_snapshot(zic_v2_storage_t *storage)
     if (!storage->sd_card_mounted) {
         return;
     }
+    storage->sd_card_total_bytes = (uint64_t)s_sd_card->csd.capacity * s_sd_card->csd.sector_size;
 
     FATFS *fs = NULL;
     DWORD free_clusters = 0;
     if (f_getfree(ZIC_SD_CARD_MOUNT_POINT, &free_clusters, &fs) == FR_OK && fs != NULL) {
-        storage->sd_card_total_bytes = (uint64_t)(fs->n_fatent - 2) * fs->csize * 512u;
+        storage->sd_card_filesystem_total_bytes = (uint64_t)(fs->n_fatent - 2) * fs->csize * 512u;
         storage->sd_card_free_bytes = (uint64_t)free_clusters * fs->csize * 512u;
     }
     storage->sd_card_name = s_sd_card->cid.name;
@@ -640,13 +641,15 @@ static esp_err_t zic_sd_card_status_http_handler(httpd_req_t *request)
     (void)zic_sd_card_mount(false);
 
     uint64_t total_bytes = 0;
+    uint64_t filesystem_total_bytes = 0;
     uint64_t free_bytes = 0;
     const char *state = s_sd_card != NULL ? "mounted" : "unavailable";
     if (s_sd_card != NULL) {
+        total_bytes = (uint64_t)s_sd_card->csd.capacity * s_sd_card->csd.sector_size;
         FATFS *fs = NULL;
         DWORD free_clusters = 0;
         if (f_getfree(ZIC_SD_CARD_MOUNT_POINT, &free_clusters, &fs) == FR_OK && fs != NULL) {
-            total_bytes = (uint64_t)(fs->n_fatent - 2) * fs->csize * 512u;
+            filesystem_total_bytes = (uint64_t)(fs->n_fatent - 2) * fs->csize * 512u;
             free_bytes = (uint64_t)free_clusters * fs->csize * 512u;
         }
     }
@@ -656,6 +659,8 @@ static esp_err_t zic_sd_card_status_http_handler(httpd_req_t *request)
         cJSON_AddStringToObject(json, "state", state) == NULL ||
         cJSON_AddBoolToObject(json, "mounted", s_sd_card != NULL) == NULL ||
         cJSON_AddNumberToObject(json, "total_bytes", (double)total_bytes) == NULL ||
+        cJSON_AddNumberToObject(json, "card_total_bytes", (double)total_bytes) == NULL ||
+        cJSON_AddNumberToObject(json, "filesystem_total_bytes", (double)filesystem_total_bytes) == NULL ||
         cJSON_AddNumberToObject(json, "free_bytes", (double)free_bytes) == NULL ||
         cJSON_AddStringToObject(json, "mount_point", ZIC_SD_CARD_MOUNT_POINT) == NULL ||
         cJSON_AddStringToObject(json, "last_error", s_sd_card_last_error) == NULL) {

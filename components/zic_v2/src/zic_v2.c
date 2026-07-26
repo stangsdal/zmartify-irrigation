@@ -310,10 +310,12 @@ bool zic_v2_build_reported_state(char *out,
 
     if (storage != NULL) {
         if (!zic_v2_appendf(out, out_len, &pos,
-                            ",\"storage\":{\"sd_card\":{\"state\":\"%s\",\"mounted\":%s,\"total_bytes\":%llu,\"free_bytes\":%llu",
+                            ",\"storage\":{\"sd_card\":{\"state\":\"%s\",\"mounted\":%s,\"total_bytes\":%llu,\"card_total_bytes\":%llu,\"filesystem_total_bytes\":%llu,\"free_bytes\":%llu",
                             storage->sd_card_mounted ? "mounted" : "unavailable",
                             storage->sd_card_mounted ? "true" : "false",
                             (unsigned long long)storage->sd_card_total_bytes,
+                            (unsigned long long)storage->sd_card_total_bytes,
+                            (unsigned long long)storage->sd_card_filesystem_total_bytes,
                             (unsigned long long)storage->sd_card_free_bytes)) {
             return false;
         }

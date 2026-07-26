@@ -61,6 +61,7 @@ typedef struct {
 typedef struct {
     bool sd_card_mounted;
     uint64_t sd_card_total_bytes;
+    uint64_t sd_card_filesystem_total_bytes;
     uint64_t sd_card_free_bytes;
     const char *sd_card_mount_point;
     const char *sd_card_name;
