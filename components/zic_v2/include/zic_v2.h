@@ -68,6 +68,7 @@ typedef enum {
     ZIC_V2_ACTION_STOP_ALL,
     ZIC_V2_ACTION_RAIN_DELAY,
     ZIC_V2_ACTION_CONFIG_NETWORK,
+    ZIC_V2_ACTION_CONFIG_STORAGE_SD_CARD_INITIALIZE,
 } zic_v2_command_action_t;
 
 typedef enum {

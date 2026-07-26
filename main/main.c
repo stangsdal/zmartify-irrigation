@@ -8,7 +8,11 @@
 #include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_vfs_fat.h"
 #include "nvs_flash.h"
+#include "driver/sdspi_host.h"
+#include "driver/spi_common.h"
+#include "sdmmc_cmd.h"
 #include <stdlib.h>
 #include <string.h>
 #include "cJSON.h"
@@ -75,6 +79,20 @@ static zic_log_entry_t s_log_buffer[ZIC_LOG_PERSIST_CAPACITY];
 
 #define ZIC_DEFAULT_BROKER_URI "mqtt://192.168.10.2:1883"
 #define ZIC_NETWORK_HOSTNAME "zmartify-irrigation"
+#define ZIC_SD_CARD_MOUNT_POINT "/sdcard"
+#define ZIC_SD_CARD_SPI_HOST SPI2_HOST
+#ifndef ZIC_SD_CARD_PIN_MISO
+#define ZIC_SD_CARD_PIN_MISO 13
+#endif
+#ifndef ZIC_SD_CARD_PIN_MOSI
+#define ZIC_SD_CARD_PIN_MOSI 11
+#endif
+#ifndef ZIC_SD_CARD_PIN_CLK
+#define ZIC_SD_CARD_PIN_CLK 12
+#endif
+#ifndef ZIC_SD_CARD_PIN_CS
+#define ZIC_SD_CARD_PIN_CS 10
+#endif
 
 /* Device identity for Zmartify v2 topics; must match the edge registry
  * device_id assigned during onboarding (lowercase, hyphenated). */
@@ -89,7 +107,8 @@ typedef enum {
     ZIC_CMD_CLEAR_RAIN_DELAY,
     ZIC_CMD_TRIGGER_OTA,
     ZIC_CMD_RELAY_SELF_TEST,
-    ZIC_CMD_UPDATE_NETWORK_CONFIG
+    ZIC_CMD_UPDATE_NETWORK_CONFIG,
+    ZIC_CMD_INITIALIZE_SD_CARD
 } zic_runtime_command_type_t;
 
 typedef struct {
@@ -101,6 +120,7 @@ typedef struct {
     char command_id[ZIC_V2_COMMAND_ID_MAX];
     char ota_url[160];
     config_network_t network_config;
+    bool sd_format_if_needed;
 } zic_runtime_command_t;
 
 typedef struct {
@@ -153,6 +173,9 @@ static char s_v2_status_topic[128];
 static zic_v2_command_tracker_t s_v2_command_tracker;
 static alarm_manager_snapshot_t s_alarm_snapshot;
 static httpd_handle_t s_ota_http_server;
+static sdmmc_card_t *s_sd_card;
+static bool s_sd_spi_bus_initialized;
+static char s_sd_card_last_error[96] = "not initialized";
 
 static void zic_publish_v2_outcome(zic_app_context_t *ctx,
                                    const char *correlation_id,
@@ -552,6 +575,98 @@ static esp_err_t zic_health_http_handler(httpd_req_t *request)
     return httpd_resp_send(request, payload, length);
 }
 
+static esp_err_t zic_sd_card_mount(bool format_if_mount_failed)
+{
+    if (s_sd_card != NULL) {
+        s_sd_card_last_error[0] = '\0';
+        return ESP_OK;
+    }
+
+    esp_err_t err = ESP_OK;
+    if (!s_sd_spi_bus_initialized) {
+        spi_bus_config_t bus_cfg = {
+            .mosi_io_num = ZIC_SD_CARD_PIN_MOSI,
+            .miso_io_num = ZIC_SD_CARD_PIN_MISO,
+            .sclk_io_num = ZIC_SD_CARD_PIN_CLK,
+            .quadwp_io_num = -1,
+            .quadhd_io_num = -1,
+            .max_transfer_sz = 4096,
+        };
+        err = spi_bus_initialize(ZIC_SD_CARD_SPI_HOST, &bus_cfg, SDSPI_DEFAULT_DMA);
+        if (err != ESP_OK) {
+            snprintf(s_sd_card_last_error, sizeof(s_sd_card_last_error), "spi bus init failed: %s", esp_err_to_name(err));
+            return err;
+        }
+        s_sd_spi_bus_initialized = true;
+    }
+
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    host.slot = ZIC_SD_CARD_SPI_HOST;
+    sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
+    slot_config.gpio_cs = ZIC_SD_CARD_PIN_CS;
+    slot_config.host_id = ZIC_SD_CARD_SPI_HOST;
+    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+        .format_if_mount_failed = format_if_mount_failed,
+        .max_files = 4,
+        .allocation_unit_size = 16 * 1024,
+    };
+    err = esp_vfs_fat_sdspi_mount(ZIC_SD_CARD_MOUNT_POINT, &host, &slot_config, &mount_config, &s_sd_card);
+    if (err != ESP_OK) {
+        snprintf(s_sd_card_last_error, sizeof(s_sd_card_last_error), "mount failed: %s", esp_err_to_name(err));
+        (void)spi_bus_free(ZIC_SD_CARD_SPI_HOST);
+        s_sd_spi_bus_initialized = false;
+        return err;
+    }
+
+    s_sd_card_last_error[0] = '\0';
+    return ESP_OK;
+}
+
+static esp_err_t zic_sd_card_status_http_handler(httpd_req_t *request)
+{
+    (void)zic_sd_card_mount(false);
+
+    uint64_t total_bytes = 0;
+    uint64_t free_bytes = 0;
+    const char *state = s_sd_card != NULL ? "mounted" : "unavailable";
+    if (s_sd_card != NULL) {
+        FATFS *fs = NULL;
+        DWORD free_clusters = 0;
+        if (f_getfree(ZIC_SD_CARD_MOUNT_POINT, &free_clusters, &fs) == FR_OK && fs != NULL) {
+            total_bytes = (uint64_t)(fs->n_fatent - 2) * fs->csize * 512u;
+            free_bytes = (uint64_t)free_clusters * fs->csize * 512u;
+        }
+    }
+
+    cJSON *json = cJSON_CreateObject();
+    if (json == NULL ||
+        cJSON_AddStringToObject(json, "state", state) == NULL ||
+        cJSON_AddBoolToObject(json, "mounted", s_sd_card != NULL) == NULL ||
+        cJSON_AddNumberToObject(json, "total_bytes", (double)total_bytes) == NULL ||
+        cJSON_AddNumberToObject(json, "free_bytes", (double)free_bytes) == NULL ||
+        cJSON_AddStringToObject(json, "mount_point", ZIC_SD_CARD_MOUNT_POINT) == NULL ||
+        cJSON_AddStringToObject(json, "last_error", s_sd_card_last_error) == NULL) {
+        cJSON_Delete(json);
+        httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "SD status response failed");
+        return ESP_FAIL;
+    }
+    if (s_sd_card != NULL) {
+        (void)cJSON_AddStringToObject(json, "card_name", s_sd_card->cid.name);
+    }
+
+    char *payload = cJSON_PrintUnformatted(json);
+    cJSON_Delete(json);
+    if (payload == NULL) {
+        httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "SD status response failed");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(request, "application/json");
+    esp_err_t result = httpd_resp_sendstr(request, payload);
+    cJSON_free(payload);
+    return result;
+}
+
 static bool zic_json_copy_string(const cJSON *root, const char *key, char *out, size_t out_len)
 {
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, key);
@@ -807,6 +922,19 @@ static bool zic_ota_http_start(void)
         return false;
     }
 
+    const httpd_uri_t sd_card_status_uri = {
+        .uri = "/storage/sd-card",
+        .method = HTTP_GET,
+        .handler = zic_sd_card_status_http_handler,
+    };
+    err = httpd_register_uri_handler(s_ota_http_server, &sd_card_status_uri);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "SD-card status endpoint registration failed: %s", esp_err_to_name(err));
+        httpd_stop(s_ota_http_server);
+        s_ota_http_server = NULL;
+        return false;
+    }
+
     const httpd_uri_t network_config_get_uri = {
         .uri = "/config/network",
         .method = HTTP_GET,
@@ -846,7 +974,7 @@ static bool zic_ota_http_start(void)
         return false;
     }
 
-    ESP_LOGI(TAG, "HTTP services ready: POST /ota, POST /reboot, GET /logs, GET /health, GET/POST /config/network, POST /weather");
+    ESP_LOGI(TAG, "HTTP services ready: POST /ota, POST /reboot, GET /logs, GET /health, GET /storage/sd-card, GET/POST /config/network, POST /weather");
     return true;
 }
 
@@ -1155,6 +1283,13 @@ static void zic_mqtt_on_message(const char *topic,
             }
             cmd.type = ZIC_CMD_UPDATE_NETWORK_CONFIG;
             cmd.network_config = network;
+        } else if (strcmp(action, "config/storage/sd-card/initialize") == 0) {
+            static const char *const fields[] = {"format"};
+            v2_command.action = ZIC_V2_ACTION_CONFIG_STORAGE_SD_CARD_INITIALIZE;
+            schema_valid = schema_valid && zic_json_has_allowed(parameters, fields, 1u);
+            const cJSON *format = cJSON_GetObjectItemCaseSensitive(parameters, "format");
+            cmd.type = ZIC_CMD_INITIALIZE_SD_CARD;
+            cmd.sd_format_if_needed = format == NULL || cJSON_IsTrue(format);
         } else {
             schema_valid = false;
         }
@@ -1518,6 +1653,17 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
             zic_publish_v2_outcome(ctx, cmd->command_id, "config.updated", "info", "completed", "reboot_required", 0);
         } else {
             zic_publish_v2_outcome(ctx, cmd->command_id, "config.rejected", "warning", "rejected", "config_save_failed", 0);
+        }
+        break;
+    case ZIC_CMD_INITIALIZE_SD_CARD:
+        if (zic_sd_card_mount(cmd->sd_format_if_needed) == ESP_OK) {
+            storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
+                                   ZIC_LOG_AUDIT, "sd card initialized by command");
+            zic_publish_v2_outcome(ctx, cmd->command_id, "storage.sd_card.initialized", "info", "completed", "mounted", 0);
+        } else {
+            storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
+                                   ZIC_LOG_AUDIT, "sd card initialize failed");
+            zic_publish_v2_outcome(ctx, cmd->command_id, "storage.sd_card.rejected", "warning", "rejected", s_sd_card_last_error, 0);
         }
         break;
     case ZIC_CMD_TRIGGER_OTA: {
