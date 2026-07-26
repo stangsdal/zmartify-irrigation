@@ -152,9 +152,11 @@ static void test_schema_v1_migration(void)
     assert(config.zones[0].seasonal_factor_pct == 95);
     assert(config.zones[0].et_crop_coefficient_x100 == 75);
     assert(config_migrate_v2(&config));
-    assert(config.schema_version == CONFIG_SCHEMA_VERSION);
+    assert(config.schema_version == 3u);
     assert(config.hydraulics.valve_open_timeout_s == 30);
     assert(config.hydraulics.valve_close_timeout_s == 10);
+    assert(config_migrate_v3(&config));
+    assert(config.schema_version == CONFIG_SCHEMA_VERSION);
     assert(config_validate_safety(&config));
     assert(!config_migrate_v1(&config));
 }
@@ -166,11 +168,30 @@ static void test_schema_v2_migration(void)
     config.schema_version = 2;
 
     assert(config_migrate_v2(&config));
-    assert(config.schema_version == CONFIG_SCHEMA_VERSION);
+    assert(config.schema_version == 3u);
     assert(config.hydraulics.valve_open_timeout_s == 30);
     assert(config.hydraulics.valve_close_timeout_s == 10);
+    assert(config_migrate_v3(&config));
+    assert(config.schema_version == CONFIG_SCHEMA_VERSION);
     assert(config_validate_safety(&config));
     assert(!config_migrate_v2(&config));
+}
+
+static void test_schema_v3_migration_enables_all_zones(void)
+{
+    zic_config_t config = valid_config();
+    for (uint8_t index = 8; index < CONFIG_MAX_ZONES; ++index) {
+        config.zones[index].enabled = false;
+    }
+    config.schema_version = 3u;
+
+    assert(config_migrate_v3(&config));
+    assert(config.schema_version == CONFIG_SCHEMA_VERSION);
+    for (uint8_t index = 0; index < CONFIG_MAX_ZONES; ++index) {
+        assert(config.zones[index].enabled);
+    }
+    assert(config_validate_safety(&config));
+    assert(!config_migrate_v3(&config));
 }
 
 static void test_atomic_migration_dispatch(void)
@@ -181,6 +202,9 @@ static void test_atomic_migration_dispatch(void)
     assert(config_migrate_to_current(&config));
     assert(config.schema_version == CONFIG_SCHEMA_VERSION);
     assert(config.hydraulics.valve_open_timeout_s == 30u);
+    for (uint8_t index = 0; index < CONFIG_MAX_ZONES; ++index) {
+        assert(config.zones[index].enabled);
+    }
 
     config = valid_config();
     config.schema_version = 99u;
@@ -202,6 +226,7 @@ int main(void)
     test_zone_commissioning();
     test_schema_v1_migration();
     test_schema_v2_migration();
+    test_schema_v3_migration_enables_all_zones();
     test_atomic_migration_dispatch();
     return 0;
 }

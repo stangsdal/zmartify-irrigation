@@ -111,7 +111,7 @@ static void apply_factory_defaults(zic_config_t *cfg)
     {
         snprintf(cfg->zones[i].name, CONFIG_ZONE_NAME_LEN, "Zone %d", i + 1);
         cfg->zones[i].relay_index              = (uint8_t)(i + 1); /* relay 1-15 */
-        cfg->zones[i].enabled                  = (i < 8);           /* first 8 enabled */
+        cfg->zones[i].enabled                  = true;
         cfg->zones[i].plant_type               = CONFIG_PLANT_LAWN;
         cfg->zones[i].soil_type                = CONFIG_SOIL_LOAM;
         cfg->zones[i].emitter_type             = CONFIG_EMITTER_ROTOR;

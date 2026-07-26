@@ -167,6 +167,18 @@ bool config_migrate_v2(zic_config_t *config)
     }
     config->hydraulics.valve_open_timeout_s = 30;
     config->hydraulics.valve_close_timeout_s = 10;
+    config->schema_version = 3u;
+    return true;
+}
+
+bool config_migrate_v3(zic_config_t *config)
+{
+    if (config == NULL || config->schema_version != 3u) {
+        return false;
+    }
+    for (uint8_t index = 0; index < CONFIG_MAX_ZONES; ++index) {
+        config->zones[index].enabled = true;
+    }
     config->schema_version = CONFIG_SCHEMA_VERSION;
     return true;
 }
@@ -186,6 +198,9 @@ bool config_migrate_to_current(zic_config_t *config)
             break;
         case 2u:
             migrated = config_migrate_v2(&candidate);
+            break;
+        case 3u:
+            migrated = config_migrate_v3(&candidate);
             break;
         default:
             return false;
