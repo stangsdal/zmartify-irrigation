@@ -6,6 +6,7 @@
 #include "diagnostics_manager.h"
 #include "event_bus.h"
 #include "ota_manager.h"
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_system.h"
@@ -208,8 +209,12 @@ size_t diagnostics_health_to_json(char *buf, size_t len)
         return 0;
     }
 
+    const esp_app_desc_t *app_desc = esp_app_get_description();
+    const char *firmware_version = app_desc != NULL ? app_desc->version : "unknown";
+
     int r = snprintf(buf, len,
              "{"
+             "\"firmware_version\":\"%s\","
              "\"uptime_s\":%lu,"
              "\"heap_free\":%lu,"
              "\"heap_min\":%lu,"
@@ -235,6 +240,7 @@ size_t diagnostics_health_to_json(char *buf, size_t len)
              "\"watersensor_stack_free\":%lu,"
              "\"ota_acceptable\":%s"
              "}",
+             firmware_version,
              (unsigned long)h.uptime_s,
              (unsigned long)h.heap_free_bytes,
              (unsigned long)h.heap_min_bytes,

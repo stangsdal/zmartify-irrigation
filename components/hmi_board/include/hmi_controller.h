@@ -6,6 +6,7 @@
 
 #define HMI_MAX_VISIBLE_ALARMS 8u
 #define HMI_ZONE_VALVE_COUNT 15u
+#define HMI_FIRMWARE_VERSION_LEN 32u
 
 typedef enum {
     HMI_SCREEN_DASHBOARD = 0,
@@ -65,6 +66,7 @@ typedef struct {
     bool zone_valve_on[HMI_ZONE_VALVE_COUNT];
     bool wifi_connected;
     int8_t wifi_rssi_dbm;
+    char firmware_version[HMI_FIRMWARE_VERSION_LEN];
     hmi_alarm_view_t alarms[HMI_MAX_VISIBLE_ALARMS];
     uint8_t alarm_count;
 } hmi_view_model_t;

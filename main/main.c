@@ -2,6 +2,7 @@
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
+#include "esp_app_desc.h"
 #include "esp_http_server.h"
 #include "esp_mac.h"
 #include "esp_ota_ops.h"
@@ -34,6 +35,7 @@
 #include "weather_manager.h"
 #include "watersensor_client.h"
 #include "hmi_board.h"
+#include "version.h"
 #include "zic_v2.h"
 #include <time.h>
 
@@ -1869,6 +1871,11 @@ static bool zic_hmi_snapshot(void *context, hmi_view_model_t *view_model)
     snapshot.storage_ready = ctx->storage_ready && ctx->storage_last_write_ok;
     snapshot.config_safe_mode = config_is_safe_mode();
     snapshot.master_valve_on = relay_master_is_open();
+    const esp_app_desc_t *app_desc = esp_app_get_description();
+    snprintf(snapshot.firmware_version,
+             sizeof(snapshot.firmware_version),
+             "%s",
+             app_desc != NULL ? app_desc->version : ZIC_FW_VERSION_STR);
     for (uint8_t relay = RELAY_ZONE_FIRST; relay <= RELAY_ZONE_LAST; ++relay) {
         snapshot.zone_valve_on[relay - RELAY_ZONE_FIRST] = relay_zone_is_open(relay);
     }
