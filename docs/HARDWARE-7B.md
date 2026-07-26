@@ -60,6 +60,18 @@ then drive outputs through command `0x03` (`IO_EXTENSION_IO_OUTPUT_ADDR`). Pin m
 Registers: mode `0x02`, output `0x03`, input `0x04`, PWM `0x05`, ADC `0x06`. The backlight must be
 turned on through this chip (IO2); there is no direct backlight GPIO (panel `BK_LIGHT = -1`).
 
+## SD card
+
+The 7B microSD socket uses SDMMC 1-bit mode, not SDSPI. Match Waveshare's examples:
+
+| SD signal | ESP32-S3 GPIO |
+| --- | --- |
+| CLK | GPIO12 |
+| CMD | GPIO11 |
+| D0 | GPIO13 |
+
+Before mounting, drive IO expander IO4 high. Do not use a native ESP32 GPIO as SD CS for this board.
+
 ## Touch
 
 GT911 on the same I2C bus (addresses 0x5D default / 0x14). Reset line is expander IO1, so the GT911

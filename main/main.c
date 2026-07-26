@@ -10,8 +10,7 @@
 #include "esp_timer.h"
 #include "esp_vfs_fat.h"
 #include "nvs_flash.h"
-#include "driver/sdspi_host.h"
-#include "driver/spi_common.h"
+#include "driver/sdmmc_host.h"
 #include "sdmmc_cmd.h"
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +27,7 @@
 #include "event_bus.h"
 #include "flow_manager.h"
 #include "hal.h"
+#include "hmi_7b_ioexp.h"
 #include "irrigation_engine.h"
 #include "mqtt_transport.h"
 #include "ota_manager.h"
@@ -80,18 +80,17 @@ static zic_log_entry_t s_log_buffer[ZIC_LOG_PERSIST_CAPACITY];
 #define ZIC_DEFAULT_BROKER_URI "mqtt://192.168.10.2:1883"
 #define ZIC_NETWORK_HOSTNAME "zmartify-irrigation"
 #define ZIC_SD_CARD_MOUNT_POINT "/sdcard"
-#define ZIC_SD_CARD_SPI_HOST SPI2_HOST
-#ifndef ZIC_SD_CARD_PIN_MISO
-#define ZIC_SD_CARD_PIN_MISO 13
+#ifndef ZIC_SD_CARD_PIN_D0
+#define ZIC_SD_CARD_PIN_D0 GPIO_NUM_13
 #endif
-#ifndef ZIC_SD_CARD_PIN_MOSI
-#define ZIC_SD_CARD_PIN_MOSI 11
+#ifndef ZIC_SD_CARD_PIN_CMD
+#define ZIC_SD_CARD_PIN_CMD GPIO_NUM_11
 #endif
 #ifndef ZIC_SD_CARD_PIN_CLK
-#define ZIC_SD_CARD_PIN_CLK 12
+#define ZIC_SD_CARD_PIN_CLK GPIO_NUM_12
 #endif
-#ifndef ZIC_SD_CARD_PIN_CS
-#define ZIC_SD_CARD_PIN_CS 10
+#ifndef ZIC_SD_CARD_IOEXP_CS_BIT
+#define ZIC_SD_CARD_IOEXP_CS_BIT 4
 #endif
 
 /* Device identity for Zmartify v2 topics; must match the edge registry
@@ -174,7 +173,6 @@ static zic_v2_command_tracker_t s_v2_command_tracker;
 static alarm_manager_snapshot_t s_alarm_snapshot;
 static httpd_handle_t s_ota_http_server;
 static sdmmc_card_t *s_sd_card;
-static bool s_sd_spi_bus_initialized;
 static char s_sd_card_last_error[96] = "not initialized";
 
 static void zic_publish_v2_outcome(zic_app_context_t *ctx,
@@ -582,39 +580,27 @@ static esp_err_t zic_sd_card_mount(bool format_if_mount_failed)
         return ESP_OK;
     }
 
-    esp_err_t err = ESP_OK;
-    if (!s_sd_spi_bus_initialized) {
-        spi_bus_config_t bus_cfg = {
-            .mosi_io_num = ZIC_SD_CARD_PIN_MOSI,
-            .miso_io_num = ZIC_SD_CARD_PIN_MISO,
-            .sclk_io_num = ZIC_SD_CARD_PIN_CLK,
-            .quadwp_io_num = -1,
-            .quadhd_io_num = -1,
-            .max_transfer_sz = 4096,
-        };
-        err = spi_bus_initialize(ZIC_SD_CARD_SPI_HOST, &bus_cfg, SDSPI_DEFAULT_DMA);
-        if (err != ESP_OK) {
-            snprintf(s_sd_card_last_error, sizeof(s_sd_card_last_error), "spi bus init failed: %s", esp_err_to_name(err));
-            return err;
-        }
-        s_sd_spi_bus_initialized = true;
+    if (!hmi_7b_ioexp_set_output_bit(ZIC_SD_CARD_IOEXP_CS_BIT, true)) {
+        snprintf(s_sd_card_last_error, sizeof(s_sd_card_last_error), "sd cs expander control failed");
+        return ESP_FAIL;
     }
 
-    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.slot = ZIC_SD_CARD_SPI_HOST;
-    sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
-    slot_config.gpio_cs = ZIC_SD_CARD_PIN_CS;
-    slot_config.host_id = ZIC_SD_CARD_SPI_HOST;
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.max_freq_khz = SDMMC_FREQ_DEFAULT;
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+    slot_config.width = 1;
+    slot_config.clk = ZIC_SD_CARD_PIN_CLK;
+    slot_config.cmd = ZIC_SD_CARD_PIN_CMD;
+    slot_config.d0 = ZIC_SD_CARD_PIN_D0;
+    slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = format_if_mount_failed,
         .max_files = 4,
         .allocation_unit_size = 16 * 1024,
     };
-    err = esp_vfs_fat_sdspi_mount(ZIC_SD_CARD_MOUNT_POINT, &host, &slot_config, &mount_config, &s_sd_card);
+    esp_err_t err = esp_vfs_fat_sdmmc_mount(ZIC_SD_CARD_MOUNT_POINT, &host, &slot_config, &mount_config, &s_sd_card);
     if (err != ESP_OK) {
         snprintf(s_sd_card_last_error, sizeof(s_sd_card_last_error), "mount failed: %s", esp_err_to_name(err));
-        (void)spi_bus_free(ZIC_SD_CARD_SPI_HOST);
-        s_sd_spi_bus_initialized = false;
         return err;
     }
 
