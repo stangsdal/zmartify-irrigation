@@ -18,4 +18,12 @@ config HMI_DISPLAY_PROFILE_HIGH_THROUGHPUT
 
 endchoice
 
+config HMI_SCREEN_BLANK_TIMEOUT_SECONDS
+    int "Screen blank timeout in seconds"
+    default 300
+    range 0 86400
+    help
+        Turn the display backlight off after this many seconds without touch input.
+        Set to 0 to keep the display backlight on indefinitely.
+
 endmenu

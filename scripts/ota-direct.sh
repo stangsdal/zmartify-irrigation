@@ -2,6 +2,12 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+cd "$PROJECT_ROOT"
+source "$SCRIPT_DIR/esp-idf-env.sh"
+
 DEVICE_IP="${1:-}"
 FIRMWARE="${2:-build/zmartify_irrigation.bin}"
 

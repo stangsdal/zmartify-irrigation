@@ -6,6 +6,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "hmi_7b_ioexp.h"
 #include "hmi_7b_rgb.h"
 #include "hmi_board.h"
 #include "lvgl.h"
@@ -26,6 +27,7 @@ static const char *TAG = "hmi_lvgl";
 #define LVGL_TASK_MAX_DELAY_MS         16
 #define LVGL_DIRECT_BUFFER_COUNT       2
 #define STATUS_UPDATE_PERIOD_MS         1000
+#define SCREEN_BLANK_TIMEOUT_MS         ((uint32_t)CONFIG_HMI_SCREEN_BLANK_TIMEOUT_SECONDS * 1000U)
 #define HMI_NAV_X                       24
 #define HMI_NAV_Y                       112
 #define HMI_NAV_W                       (LCD_H_RES - 48)
@@ -74,6 +76,9 @@ static int64_t s_last_perf_us = 0;
 static int64_t s_last_status_update_us = 0;
 static hmi_touch_state_t s_last_touch = {0};
 static bool s_touch_was_pressed = false;
+static bool s_backlight_on = true;
+static bool s_wake_touch_active = false;
+static int64_t s_last_interaction_us = 0;
 static hmi_controller_t s_controller;
 static hmi_snapshot_fn s_snapshot = NULL;
 static void *s_bindings_context = NULL;
@@ -132,6 +137,109 @@ static void update_view_labels(void);
 static lv_obj_t *create_screen_body(lv_obj_t *parent, hmi_screen_t screen);
 static void create_all_screen_bodies(lv_obj_t *parent);
 static void process_nav_tap(int16_t x, int16_t y);
+static void clamp_touch_to_panel(int16_t *x, int16_t *y);
+
+extern bool hmi_touch_read(uint16_t *x, uint16_t *y, bool *pressed);
+
+static void set_backlight_state(bool on)
+{
+    if (s_backlight_on == on)
+    {
+        return;
+    }
+
+    if (hmi_7b_ioexp_set_backlight(on))
+    {
+        s_backlight_on = on;
+        ESP_LOGI(TAG, "screen backlight %s", on ? "on" : "off");
+    }
+    else
+    {
+        ESP_LOGW(TAG, "screen backlight %s failed", on ? "on" : "off");
+    }
+}
+
+static void update_screen_blank_timeout(int64_t now_us)
+{
+#if CONFIG_HMI_SCREEN_BLANK_TIMEOUT_SECONDS > 0
+    if (s_last_interaction_us == 0)
+    {
+        s_last_interaction_us = now_us;
+    }
+
+    if (s_backlight_on &&
+        now_us - s_last_interaction_us >= ((int64_t)SCREEN_BLANK_TIMEOUT_MS * 1000LL))
+    {
+        set_backlight_state(false);
+    }
+#else
+    (void)now_us;
+#endif
+}
+
+static bool handle_touch_activity(bool read_ok, bool pressed)
+{
+    if (!read_ok)
+    {
+        return false;
+    }
+
+    int64_t now_us = esp_timer_get_time();
+    if (pressed)
+    {
+        s_last_interaction_us = now_us;
+        if (!s_backlight_on)
+        {
+            set_backlight_state(true);
+            s_wake_touch_active = true;
+            return true;
+        }
+    }
+    else if (s_wake_touch_active)
+    {
+        s_wake_touch_active = false;
+        return true;
+    }
+
+    return s_wake_touch_active;
+}
+
+static void read_touch_for_lvgl(lv_indev_data_t *data)
+{
+    uint16_t x = 0;
+    uint16_t y = 0;
+    bool pressed = false;
+    bool read_ok = hmi_touch_read(&x, &y, &pressed);
+    bool consume_touch = handle_touch_activity(read_ok, pressed);
+
+    if (read_ok)
+    {
+        s_last_touch.valid = true;
+        s_last_touch.pressed = pressed && !consume_touch;
+        if (pressed)
+        {
+            s_last_touch.x = (int16_t)x;
+            s_last_touch.y = (int16_t)y;
+            clamp_touch_to_panel(&s_last_touch.x, &s_last_touch.y);
+        }
+    }
+    else
+    {
+        /* On transient I2C read errors, force release so LVGL can still complete click sequences. */
+        s_last_touch.valid = true;
+        s_last_touch.pressed = false;
+    }
+
+    if (s_touch_was_pressed && read_ok && !pressed && !consume_touch)
+    {
+        process_nav_tap(s_last_touch.x, s_last_touch.y);
+    }
+    s_touch_was_pressed = s_last_touch.pressed;
+
+    data->state = (s_last_touch.valid && s_last_touch.pressed) ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    data->point.x = s_last_touch.x;
+    data->point.y = s_last_touch.y;
+}
 
 typedef enum {
     HMI_UI_ZONE_PREVIOUS = 1,
@@ -993,6 +1101,7 @@ static void create_home_screen(void)
     update_nav_highlight();
 
     s_last_perf_us = esp_timer_get_time();
+    s_last_interaction_us = s_last_perf_us;
 }
 
 #if LVGL_VERSION_MAJOR >= 9
@@ -1023,38 +1132,7 @@ static void lvgl_flush_cb(lv_display_t *display, const lv_area_t *area, uint8_t 
 static void lvgl_touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 {
     (void)indev;
-    uint16_t x = 0;
-    uint16_t y = 0;
-    bool pressed = false;
-    bool read_ok = hmi_touch_read(&x, &y, &pressed);
-
-    if (read_ok)
-    {
-        s_last_touch.valid = true;
-        s_last_touch.pressed = pressed;
-        if (pressed)
-        {
-            s_last_touch.x = (int16_t)x;
-            s_last_touch.y = (int16_t)y;
-            clamp_touch_to_panel(&s_last_touch.x, &s_last_touch.y);
-        }
-    }
-    else
-    {
-        /* On transient I2C read errors, force release so LVGL can still complete click sequences. */
-        s_last_touch.valid = true;
-        s_last_touch.pressed = false;
-    }
-
-    if (s_touch_was_pressed && read_ok && !pressed)
-    {
-        process_nav_tap(s_last_touch.x, s_last_touch.y);
-    }
-    s_touch_was_pressed = s_last_touch.pressed;
-
-    data->state = (s_last_touch.valid && s_last_touch.pressed) ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
-    data->point.x = s_last_touch.x;
-    data->point.y = s_last_touch.y;
+    read_touch_for_lvgl(data);
 }
 #else
 static void lvgl_flush_cb(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_t *color_map)
@@ -1084,38 +1162,7 @@ static void lvgl_flush_cb(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_col
 static void lvgl_touch_read_cb(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
 {
     (void)indev_drv;
-    uint16_t x = 0;
-    uint16_t y = 0;
-    bool pressed = false;
-    bool read_ok = hmi_touch_read(&x, &y, &pressed);
-
-    if (read_ok)
-    {
-        s_last_touch.valid = true;
-        s_last_touch.pressed = pressed;
-        if (pressed)
-        {
-            s_last_touch.x = (int16_t)x;
-            s_last_touch.y = (int16_t)y;
-            clamp_touch_to_panel(&s_last_touch.x, &s_last_touch.y);
-        }
-    }
-    else
-    {
-        /* On transient I2C read errors, force release so LVGL can still complete click sequences. */
-        s_last_touch.valid = true;
-        s_last_touch.pressed = false;
-    }
-
-    if (s_touch_was_pressed && read_ok && !pressed)
-    {
-        process_nav_tap(s_last_touch.x, s_last_touch.y);
-    }
-    s_touch_was_pressed = s_last_touch.pressed;
-
-    data->state = (s_last_touch.valid && s_last_touch.pressed) ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
-    data->point.x = s_last_touch.x;
-    data->point.y = s_last_touch.y;
+    read_touch_for_lvgl(data);
 }
 #endif
 
@@ -1387,6 +1434,7 @@ static void lvgl_task(void *arg)
             {
                 update_status_labels();
             }
+            update_screen_blank_timeout(now_us);
             lvgl_unlock();
         }
 
