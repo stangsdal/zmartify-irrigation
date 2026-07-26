@@ -564,6 +564,41 @@ static bool zic_json_copy_string(const cJSON *root, const char *key, char *out, 
     return true;
 }
 
+static esp_err_t zic_network_config_get_http_handler(httpd_req_t *request)
+{
+    config_network_t network;
+    if (config_get_network(&network) != CFG_OK) {
+        httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Config not ready");
+        return ESP_FAIL;
+    }
+
+    cJSON *json = cJSON_CreateObject();
+    if (json == NULL ||
+        cJSON_AddStringToObject(json, "mqtt_broker_uri", network.mqtt_broker_uri) == NULL ||
+        cJSON_AddNumberToObject(json, "mqtt_port", network.mqtt_port) == NULL ||
+        cJSON_AddStringToObject(json, "mqtt_username", network.mqtt_username) == NULL ||
+        cJSON_AddBoolToObject(json, "mqtt_password_configured", network.mqtt_password[0] != '\0') == NULL ||
+        cJSON_AddBoolToObject(json, "mqtt_tls_enabled", network.mqtt_tls_enabled) == NULL ||
+        cJSON_AddStringToObject(json, "ntp_server", network.ntp_server) == NULL ||
+        cJSON_AddStringToObject(json, "timezone", network.timezone) == NULL) {
+        cJSON_Delete(json);
+        httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Config response failed");
+        return ESP_FAIL;
+    }
+
+    char *payload = cJSON_PrintUnformatted(json);
+    cJSON_Delete(json);
+    if (payload == NULL) {
+        httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Config response failed");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(request, "application/json");
+    esp_err_t result = httpd_resp_sendstr(request, payload);
+    cJSON_free(payload);
+    return result;
+}
+
 static esp_err_t zic_network_config_http_handler(httpd_req_t *request)
 {
     char body[512];
@@ -770,6 +805,19 @@ static bool zic_ota_http_start(void)
         return false;
     }
 
+    const httpd_uri_t network_config_get_uri = {
+        .uri = "/config/network",
+        .method = HTTP_GET,
+        .handler = zic_network_config_get_http_handler,
+    };
+    err = httpd_register_uri_handler(s_ota_http_server, &network_config_get_uri);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Network config read endpoint registration failed: %s", esp_err_to_name(err));
+        httpd_stop(s_ota_http_server);
+        s_ota_http_server = NULL;
+        return false;
+    }
+
     const httpd_uri_t network_config_uri = {
         .uri = "/config/network",
         .method = HTTP_POST,
@@ -796,7 +844,7 @@ static bool zic_ota_http_start(void)
         return false;
     }
 
-    ESP_LOGI(TAG, "HTTP services ready: POST /ota, POST /reboot, GET /logs, GET /health, POST /config/network, POST /weather");
+    ESP_LOGI(TAG, "HTTP services ready: POST /ota, POST /reboot, GET /logs, GET /health, GET/POST /config/network, POST /weather");
     return true;
 }
 

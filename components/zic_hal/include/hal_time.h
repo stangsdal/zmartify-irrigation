@@ -19,6 +19,9 @@ typedef enum hal_result hal_result_t;
 /** Default NTP server */
 #define HAL_TIME_NTP_SERVER  "pool.ntp.org"
 
+/** Default local timezone: Europe/Copenhagen as a POSIX TZ rule. */
+#define HAL_TIME_DEFAULT_TZ  "CET-1CEST,M3.5.0/2,M10.5.0/3"
+
 /**
  * @brief Initialise the time subsystem.
  *
@@ -26,7 +29,7 @@ typedef enum hal_result hal_result_t;
  * use hal_time_is_synced() to check status.
  *
  * @param tz_posix  POSIX TZ string, e.g. "AEST-10AEDT,M10.1.0,M4.1.0/3"
- *                  Pass NULL to use UTC.
+ *                  Pass NULL to use HAL_TIME_DEFAULT_TZ.
  * @return HAL_OK on success.
  */
 hal_result_t hal_time_init(const char *tz_posix);

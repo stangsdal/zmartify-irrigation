@@ -56,8 +56,9 @@ hal_result_t hal_time_init(const char *tz_posix)
     }
     else
     {
-        setenv("TZ", "UTC0", 1);
+        setenv("TZ", HAL_TIME_DEFAULT_TZ, 1);
         tzset();
+        ESP_LOGI(TAG, "Timezone set: %s", HAL_TIME_DEFAULT_TZ);
     }
 
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);

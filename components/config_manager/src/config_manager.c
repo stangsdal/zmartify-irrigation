@@ -12,6 +12,7 @@
 
 #include "config_manager.h"
 #include "config_validation.h"
+#include "hal_time.h"
 #include "hal.h"
 #include "event_bus.h"
 #include "esp_log.h"
@@ -80,7 +81,7 @@ static void apply_factory_defaults(zic_config_t *cfg)
     strncpy(cfg->network.mqtt_broker_uri, "mqtt://192.168.10.2:1883",
             CONFIG_MQTT_URI_LEN - 1);
     strncpy(cfg->network.ntp_server, "pool.ntp.org", CONFIG_NTP_LEN - 1);
-    strncpy(cfg->network.timezone, "UTC0", CONFIG_TZ_LEN - 1);
+    strncpy(cfg->network.timezone, HAL_TIME_DEFAULT_TZ, CONFIG_TZ_LEN - 1);
     cfg->network.mqtt_port = 1883;
     cfg->network.wifi_max_retries = 5;
 
