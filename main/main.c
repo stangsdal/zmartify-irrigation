@@ -608,6 +608,41 @@ static esp_err_t zic_sd_card_mount(bool format_if_mount_failed)
     return ESP_OK;
 }
 
+static esp_err_t zic_sd_card_initialize(bool format)
+{
+    esp_err_t err = zic_sd_card_mount(false);
+    if (err != ESP_OK && format) {
+        err = zic_sd_card_mount(true);
+    }
+    if (err != ESP_OK || !format) {
+        return err;
+    }
+
+    esp_vfs_fat_mount_config_t format_config = {
+        .format_if_mount_failed = true,
+        .max_files = 4,
+        .allocation_unit_size = 16 * 1024,
+    };
+    err = esp_vfs_fat_sdcard_format_cfg(ZIC_SD_CARD_MOUNT_POINT, s_sd_card, &format_config);
+    if (err != ESP_OK) {
+        snprintf(s_sd_card_last_error, sizeof(s_sd_card_last_error), "format failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    FATFS *fs = NULL;
+    DWORD free_clusters = 0;
+    if (f_getfree(ZIC_SD_CARD_MOUNT_POINT, &free_clusters, &fs) != FR_OK || fs == NULL) {
+        s_sd_card = NULL;
+        err = zic_sd_card_mount(false);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+
+    s_sd_card_last_error[0] = '\0';
+    return ESP_OK;
+}
+
 static void zic_sd_card_storage_snapshot(zic_v2_storage_t *storage)
 {
     if (storage == NULL) {
@@ -1674,7 +1709,7 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
         }
         break;
     case ZIC_CMD_INITIALIZE_SD_CARD:
-        if (zic_sd_card_mount(cmd->sd_format_if_needed) == ESP_OK) {
+        if (zic_sd_card_initialize(cmd->sd_format_if_needed) == ESP_OK) {
             storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
                                    ZIC_LOG_AUDIT, "sd card initialized by command");
             zic_publish_v2_outcome(ctx, cmd->command_id, "storage.sd_card.initialized", "info", "completed", "mounted", 0);
