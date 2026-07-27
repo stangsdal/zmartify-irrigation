@@ -12,4 +12,5 @@ sdkconfig
 sdkconfig.old
 *.log
 main/wifi_credentials.local.h
+main/http_auth.local.h
 keys/*.pem

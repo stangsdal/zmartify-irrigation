@@ -26,8 +26,12 @@ static const char *TAG = "hmi_lvgl";
 #define LVGL_TICK_MS                   2
 #define LVGL_TASK_MIN_DELAY_MS         2
 #define LVGL_TASK_MAX_DELAY_MS         16
-#define LVGL_DIRECT_BUFFER_COUNT       2
-#define STATUS_UPDATE_PERIOD_MS         1000
+#define LVGL_TASK_STACK_BYTES          16384
+#define LVGL_TASK_PRIO                 5
+#define LVGL_DRAW_BUFFER_LINES         20
+#define LVGL_STACK_LOG_PERIOD_MS       10000
+#define LVGL_STACK_WARN_BYTES          1024
+#define STATUS_UPDATE_PERIOD_MS         5000
 #define SCREEN_BLANK_TIMEOUT_MS         ((uint32_t)CONFIG_HMI_SCREEN_BLANK_TIMEOUT_SECONDS * 1000U)
 #define HMI_NAV_X                       24
 #define HMI_NAV_Y                       112
@@ -49,6 +53,24 @@ typedef struct
     bool valid;
 } hmi_touch_state_t;
 
+typedef enum {
+    HMI_UI_ZONE_PREVIOUS = 1,
+    HMI_UI_ZONE_NEXT,
+    HMI_UI_RUNTIME_SHORTER,
+    HMI_UI_RUNTIME_LONGER,
+    HMI_UI_START_ZONE,
+    HMI_UI_PROGRAM_PREVIOUS,
+    HMI_UI_PROGRAM_NEXT,
+    HMI_UI_RUN_PROGRAM,
+    HMI_UI_STOP_ALL,
+    HMI_UI_RAIN_DELAY,
+    HMI_UI_CLEAR_RAIN_DELAY,
+    HMI_UI_ALARM_NEXT,
+    HMI_UI_ACKNOWLEDGE_ALARM,
+    HMI_UI_CLEAR_ALARM,
+    HMI_UI_RELAY_SELF_TEST,
+} hmi_ui_action_t;
+
 static esp_lcd_panel_handle_t s_panel = NULL;
 static SemaphoreHandle_t s_lvgl_mutex = NULL;
 static TaskHandle_t s_lvgl_task = NULL;
@@ -61,11 +83,16 @@ static lv_obj_t *s_label_system = NULL;
 static lv_obj_t *s_label_zone = NULL;
 static lv_obj_t *s_label_note = NULL;
 static lv_obj_t *s_content_root = NULL;
+static lv_obj_t *s_content_title = NULL;
+static lv_obj_t *s_content_summary = NULL;
+static lv_obj_t *s_content_lines[5] = {0};
+static lv_obj_t *s_action_buttons[9] = {0};
+static lv_obj_t *s_action_labels[9] = {0};
+static hmi_ui_action_t s_action_types[9] = {0};
+static uint8_t s_action_count = 0;
 static lv_obj_t *s_valve_cells[HMI_ZONE_VALVE_COUNT + 1u] = {0};
 static lv_obj_t *s_valve_dots[HMI_ZONE_VALVE_COUNT + 1u] = {0};
 static lv_obj_t *s_nav_buttons[HMI_SCREEN_COUNT] = {0};
-static lv_obj_t *s_screen_cards[HMI_SCREEN_COUNT] = {0};
-static lv_obj_t *s_screen_lines[HMI_SCREEN_COUNT][5] = {{0}};
 static lv_obj_t *s_confirmation_overlay = NULL;
 static hmi_screen_t s_active_screen = HMI_SCREEN_DASHBOARD;
 static volatile bool s_screen_change_pending = false;
@@ -75,6 +102,7 @@ static volatile uint32_t s_flush_count = 0;
 static uint32_t s_last_flush_count = 0;
 static int64_t s_last_perf_us = 0;
 static int64_t s_last_status_update_us = 0;
+static int64_t s_last_stack_log_us = 0;
 static hmi_touch_state_t s_last_touch = {0};
 static bool s_touch_was_pressed = false;
 static bool s_backlight_on = true;
@@ -96,13 +124,18 @@ static bool s_vsync_registered = false;
 
 static void wait_for_vsync_if_available(void)
 {
+#if CONFIG_HMI_DISPLAY_PROFILE_LOW_RISK
+    /* At 14 MHz the full RGB frame period is longer than the LVGL task budget;
+     * blocking for VSYNC here makes touch and redraws visibly sluggish. */
+    return;
+#else
     if (!s_vsync_registered)
     {
         return;
     }
 
-    (void)ulTaskNotifyValueClear(NULL, ULONG_MAX);
     (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
+#endif
 }
 
 static const char *const s_screen_titles[HMI_SCREEN_COUNT] = {
@@ -136,7 +169,8 @@ static void update_nav_highlight(void);
 static void rebuild_active_screen(void);
 static void update_view_labels(void);
 static lv_obj_t *create_screen_body(lv_obj_t *parent, hmi_screen_t screen);
-static void process_nav_tap(int16_t x, int16_t y);
+static bool process_nav_tap(int16_t x, int16_t y);
+static void process_content_tap(int16_t x, int16_t y);
 static void clamp_touch_to_panel(int16_t *x, int16_t *y);
 
 extern bool hmi_touch_read(uint16_t *x, uint16_t *y, bool *pressed);
@@ -232,7 +266,10 @@ static void read_touch_for_lvgl(lv_indev_data_t *data)
 
     if (s_touch_was_pressed && read_ok && !pressed && !consume_touch)
     {
-        process_nav_tap(s_last_touch.x, s_last_touch.y);
+        if (!process_nav_tap(s_last_touch.x, s_last_touch.y))
+        {
+            process_content_tap(s_last_touch.x, s_last_touch.y);
+        }
     }
     s_touch_was_pressed = s_last_touch.pressed;
 
@@ -240,24 +277,6 @@ static void read_touch_for_lvgl(lv_indev_data_t *data)
     data->point.x = s_last_touch.x;
     data->point.y = s_last_touch.y;
 }
-
-typedef enum {
-    HMI_UI_ZONE_PREVIOUS = 1,
-    HMI_UI_ZONE_NEXT,
-    HMI_UI_RUNTIME_SHORTER,
-    HMI_UI_RUNTIME_LONGER,
-    HMI_UI_START_ZONE,
-    HMI_UI_PROGRAM_PREVIOUS,
-    HMI_UI_PROGRAM_NEXT,
-    HMI_UI_RUN_PROGRAM,
-    HMI_UI_STOP_ALL,
-    HMI_UI_RAIN_DELAY,
-    HMI_UI_CLEAR_RAIN_DELAY,
-    HMI_UI_ALARM_NEXT,
-    HMI_UI_ACKNOWLEDGE_ALARM,
-    HMI_UI_CLEAR_ALARM,
-    HMI_UI_RELAY_SELF_TEST,
-} hmi_ui_action_t;
 
 static void set_label_text_if_changed(lv_obj_t *label, const char *text)
 {
@@ -342,12 +361,6 @@ static void confirmation_event_cb(lv_event_t *event)
     close_confirmation();
 }
 
-static lv_obj_t *create_action_button(lv_obj_t *parent,
-                                      const char *text,
-                                      int x,
-                                      int width,
-                                      hmi_ui_action_t action);
-
 static void show_confirmation(void)
 {
     hmi_action_t action;
@@ -370,7 +383,7 @@ static void show_confirmation(void)
     lv_obj_set_style_bg_color(dialog, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_border_color(dialog, lv_color_hex(0xD1495B), 0);
     lv_obj_set_style_border_width(dialog, 3, 0);
-    lv_obj_set_style_radius(dialog, 8, 0);
+    lv_obj_set_style_radius(dialog, 0, 0);
     lv_obj_clear_flag(dialog, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *title = lv_label_create(dialog);
@@ -413,9 +426,8 @@ static void request_action(const hmi_action_t *action)
     }
 }
 
-static void hmi_action_event_cb(lv_event_t *event)
+static void handle_ui_action(hmi_ui_action_t ui_action)
 {
-    hmi_ui_action_t ui_action = (hmi_ui_action_t)(uintptr_t)lv_event_get_user_data(event);
     hmi_action_t action = {0};
 
     switch (ui_action) {
@@ -498,27 +510,6 @@ static void hmi_action_event_cb(lv_event_t *event)
         break;
     }
     update_view_labels();
-}
-
-static lv_obj_t *create_action_button(lv_obj_t *parent,
-                                      const char *text,
-                                      int x,
-                                      int width,
-                                      hmi_ui_action_t action)
-{
-    lv_obj_t *button = lv_btn_create(parent);
-    lv_obj_set_size(button, width, 38);
-    lv_obj_set_pos(button, x, 256);
-    lv_obj_set_style_radius(button, 6, 0);
-    lv_obj_set_style_bg_color(button,
-                              action == HMI_UI_STOP_ALL ? lv_color_hex(0xD1495B)
-                                                        : lv_color_hex(0x176B87), 0);
-    lv_obj_add_event_cb(button, hmi_action_event_cb, LV_EVENT_CLICKED,
-                        (void *)(uintptr_t)action);
-    lv_obj_t *label = lv_label_create(button);
-    lv_label_set_text(label, text);
-    lv_obj_center(label);
-    return button;
 }
 
 #if HMI_RGB_BYPASS_DIAG_MODE
@@ -630,6 +621,80 @@ static void update_nav_highlight(void)
     set_label_text_if_changed(s_label_subtitle, s_screen_titles[s_active_screen]);
 }
 
+static void configure_action_button(size_t index,
+                                    const char *text,
+                                    int x,
+                                    int width,
+                                    hmi_ui_action_t action)
+{
+    if (index >= (sizeof(s_action_buttons) / sizeof(s_action_buttons[0])) ||
+        s_action_buttons[index] == NULL || s_action_labels[index] == NULL)
+    {
+        return;
+    }
+
+    lv_obj_set_size(s_action_buttons[index], width, 38);
+    lv_obj_set_pos(s_action_buttons[index], x, 256);
+    lv_obj_set_style_bg_color(s_action_buttons[index],
+                              action == HMI_UI_STOP_ALL ? lv_color_hex(0xD1495B)
+                                                        : lv_color_hex(0x176B87), 0);
+    set_label_text_if_changed(s_action_labels[index], text);
+    lv_obj_center(s_action_labels[index]);
+    lv_obj_clear_flag(s_action_buttons[index], LV_OBJ_FLAG_HIDDEN);
+    s_action_types[index] = action;
+}
+
+static void configure_screen_actions(hmi_screen_t screen)
+{
+    for (size_t index = 0; index < (sizeof(s_action_buttons) / sizeof(s_action_buttons[0])); ++index)
+    {
+        if (s_action_buttons[index] != NULL)
+        {
+            lv_obj_add_flag(s_action_buttons[index], LV_OBJ_FLAG_HIDDEN);
+        }
+        s_action_types[index] = 0;
+    }
+    s_action_count = 0;
+
+    switch (screen) {
+    case HMI_SCREEN_DASHBOARD:
+        configure_action_button(0, "STOP ALL", 18, 150, HMI_UI_STOP_ALL);
+        s_action_count = 1;
+        break;
+    case HMI_SCREEN_IRRIGATION: {
+        const char *labels[] = {"Zone -", "Zone +", "Time -", "Time +", "Start", "Prog -", "Prog +", "Run", "STOP"};
+        const hmi_ui_action_t actions[] = {
+            HMI_UI_ZONE_PREVIOUS, HMI_UI_ZONE_NEXT, HMI_UI_RUNTIME_SHORTER,
+            HMI_UI_RUNTIME_LONGER, HMI_UI_START_ZONE, HMI_UI_PROGRAM_PREVIOUS,
+            HMI_UI_PROGRAM_NEXT, HMI_UI_RUN_PROGRAM, HMI_UI_STOP_ALL
+        };
+        for (size_t index = 0; index < 9u; ++index) {
+            configure_action_button(index, labels[index], 18 + (int)index * 101, 92, actions[index]);
+        }
+        s_action_count = 9;
+        break;
+    }
+    case HMI_SCREEN_WEATHER:
+        configure_action_button(0, "Rain delay 24h", 18, 180, HMI_UI_RAIN_DELAY);
+        configure_action_button(1, "Clear delay", 210, 160, HMI_UI_CLEAR_RAIN_DELAY);
+        s_action_count = 2;
+        break;
+    case HMI_SCREEN_HYDRAULICS:
+        configure_action_button(0, "Next alarm", 18, 160, HMI_UI_ALARM_NEXT);
+        configure_action_button(1, "Acknowledge", 190, 170, HMI_UI_ACKNOWLEDGE_ALARM);
+        configure_action_button(2, "Clear resolved", 372, 180, HMI_UI_CLEAR_ALARM);
+        s_action_count = 3;
+        break;
+    case HMI_SCREEN_SETTINGS:
+        configure_action_button(0, "Relay test", 18, 160, HMI_UI_RELAY_SELF_TEST);
+        configure_action_button(1, "STOP", 190, 120, HMI_UI_STOP_ALL);
+        s_action_count = 2;
+        break;
+    default:
+        break;
+    }
+}
+
 static void rebuild_active_screen(void)
 {
     if (s_content_root == NULL)
@@ -637,30 +702,11 @@ static void rebuild_active_screen(void)
         return;
     }
 
-    if (s_screen_cards[s_active_screen] == NULL)
-    {
-        s_screen_cards[s_active_screen] = create_screen_body(s_content_root, s_active_screen);
-        update_view_labels();
-    }
-
-    for (size_t i = 0; i < HMI_SCREEN_COUNT; ++i)
-    {
-        if (s_screen_cards[i] == NULL)
-        {
-            continue;
-        }
-
-        if ((hmi_screen_t)i == s_active_screen)
-        {
-            lv_obj_clear_flag(s_screen_cards[i], LV_OBJ_FLAG_HIDDEN);
-        }
-        else
-        {
-            lv_obj_add_flag(s_screen_cards[i], LV_OBJ_FLAG_HIDDEN);
-        }
-    }
-
+    set_label_text_if_changed(s_content_title, s_screen_titles[s_active_screen]);
+    set_label_text_if_changed(s_content_summary, screen_summary(s_active_screen));
+    configure_screen_actions(s_active_screen);
     update_nav_highlight();
+    update_view_labels();
 }
 
 static void apply_pending_screen_change(void)
@@ -675,13 +721,13 @@ static void apply_pending_screen_change(void)
     rebuild_active_screen();
 }
 
-static void process_nav_tap(int16_t x, int16_t y)
+static bool process_nav_tap(int16_t x, int16_t y)
 {
     const int nav_button_y0 = HMI_NAV_Y + HMI_NAV_BUTTON_Y_IN_NAV;
     const int nav_button_y1 = nav_button_y0 + HMI_NAV_BUTTON_H;
     if (y < nav_button_y0 || y >= nav_button_y1)
     {
-        return;
+        return false;
     }
 
     const int nav_button_w = (HMI_NAV_W - (HMI_NAV_GAP * 6)) / HMI_SCREEN_COUNT;
@@ -699,9 +745,39 @@ static void process_nav_tap(int16_t x, int16_t y)
                 s_screen_change_pending = true;
                 ESP_LOGI(TAG, "screen change requested: %s", s_screen_titles[next_screen]);
             }
-            return;
+            return true;
         }
         x0 = x1 + HMI_NAV_GAP;
+    }
+    return false;
+}
+
+static void process_content_tap(int16_t x, int16_t y)
+{
+    const int card_x = 36;
+    const int button_y0 = 172 + 256;
+    const int button_y1 = button_y0 + 38;
+    if (y < button_y0 || y >= button_y1)
+    {
+        return;
+    }
+
+    for (size_t index = 0; index < s_action_count; ++index)
+    {
+        if (s_action_buttons[index] == NULL || lv_obj_has_flag(s_action_buttons[index], LV_OBJ_FLAG_HIDDEN))
+        {
+            continue;
+        }
+
+        int button_x = (int)lv_obj_get_x(s_action_buttons[index]);
+        int button_w = (int)lv_obj_get_width(s_action_buttons[index]);
+        int x0 = card_x + button_x;
+        int x1 = x0 + button_w;
+        if (x >= x0 && x < x1 && s_action_types[index] != 0)
+        {
+            handle_ui_action(s_action_types[index]);
+            return;
+        }
     }
 }
 
@@ -714,22 +790,22 @@ static lv_obj_t *create_screen_body(lv_obj_t *parent, hmi_screen_t screen)
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_border_color(card, lv_color_hex(0xC7D6E3), 0);
     lv_obj_set_style_border_width(card, 2, 0);
-    lv_obj_set_style_radius(card, 18, 0);
+    lv_obj_set_style_radius(card, 0, 0);
     lv_obj_set_style_shadow_width(card, 0, 0);
     lv_obj_set_style_pad_all(card, 0, 0);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *title = lv_label_create(card);
-    lv_label_set_text(title, s_screen_titles[screen]);
-    lv_obj_set_style_text_color(title, lv_color_hex(0x1D3557), 0);
-    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 18, 14);
+    s_content_title = lv_label_create(card);
+    lv_label_set_text(s_content_title, s_screen_titles[screen]);
+    lv_obj_set_style_text_color(s_content_title, lv_color_hex(0x1D3557), 0);
+    lv_obj_align(s_content_title, LV_ALIGN_TOP_LEFT, 18, 14);
 
-    lv_obj_t *summary = lv_label_create(card);
-    lv_label_set_long_mode(summary, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(summary, LCD_H_RES - 120);
-    lv_label_set_text(summary, screen_summary(screen));
-    lv_obj_set_style_text_color(summary, lv_color_hex(0x457B9D), 0);
-    lv_obj_align(summary, LV_ALIGN_TOP_LEFT, 18, 44);
+    s_content_summary = lv_label_create(card);
+    lv_label_set_long_mode(s_content_summary, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(s_content_summary, LCD_H_RES - 120);
+    lv_label_set_text(s_content_summary, screen_summary(screen));
+    lv_obj_set_style_text_color(s_content_summary, lv_color_hex(0x457B9D), 0);
+    lv_obj_align(s_content_summary, LV_ALIGN_TOP_LEFT, 18, 44);
 
     for (size_t i = 0; i < 5u; ++i)
     {
@@ -737,49 +813,45 @@ static lv_obj_t *create_screen_body(lv_obj_t *parent, hmi_screen_t screen)
         lv_label_set_text(line, "Loading controller data...");
         lv_obj_set_style_text_color(line, lv_color_hex(0x2B2D42), 0);
         lv_obj_align(line, LV_ALIGN_TOP_LEFT, 18, 82 + (int)i * 32);
-        s_screen_lines[screen][i] = line;
+        s_content_lines[i] = line;
     }
 
-    switch (screen) {
-    case HMI_SCREEN_DASHBOARD:
-        create_action_button(card, "STOP ALL", 18, 150, HMI_UI_STOP_ALL);
-        break;
-    case HMI_SCREEN_IRRIGATION: {
-        const char *labels[] = {"Zone -", "Zone +", "Time -", "Time +", "Start", "Prog -", "Prog +", "Run", "STOP"};
-        const hmi_ui_action_t actions[] = {
-            HMI_UI_ZONE_PREVIOUS, HMI_UI_ZONE_NEXT, HMI_UI_RUNTIME_SHORTER,
-            HMI_UI_RUNTIME_LONGER, HMI_UI_START_ZONE, HMI_UI_PROGRAM_PREVIOUS,
-            HMI_UI_PROGRAM_NEXT, HMI_UI_RUN_PROGRAM, HMI_UI_STOP_ALL
-        };
-        for (size_t index = 0; index < 9u; ++index) {
-            create_action_button(card, labels[index], 18 + (int)index * 101, 92, actions[index]);
-        }
-        break;
+    for (size_t index = 0; index < (sizeof(s_action_buttons) / sizeof(s_action_buttons[0])); ++index)
+    {
+        lv_obj_t *button = lv_obj_create(card);
+        lv_obj_remove_style_all(button);
+        lv_obj_set_size(button, 92, 38);
+        lv_obj_set_pos(button, 18, 256);
+        lv_obj_set_style_radius(button, 0, 0);
+        lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(button, lv_color_hex(0x176B87), 0);
+        lv_obj_set_style_pad_all(button, 0, 0);
+        lv_obj_set_style_border_width(button, 0, 0);
+        lv_obj_clear_flag(button, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(button, LV_OBJ_FLAG_HIDDEN);
+
+        lv_obj_t *label = lv_label_create(button);
+        lv_label_set_text(label, "");
+        lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_center(label);
+
+        s_action_buttons[index] = button;
+        s_action_labels[index] = label;
     }
-    case HMI_SCREEN_WEATHER:
-        create_action_button(card, "Rain delay 24h", 18, 180, HMI_UI_RAIN_DELAY);
-        create_action_button(card, "Clear delay", 210, 160, HMI_UI_CLEAR_RAIN_DELAY);
-        break;
-    case HMI_SCREEN_HYDRAULICS:
-        create_action_button(card, "Next alarm", 18, 160, HMI_UI_ALARM_NEXT);
-        create_action_button(card, "Acknowledge", 190, 170, HMI_UI_ACKNOWLEDGE_ALARM);
-        create_action_button(card, "Clear resolved", 372, 180, HMI_UI_CLEAR_ALARM);
-        break;
-    case HMI_SCREEN_SETTINGS:
-        create_action_button(card, "Relay test", 18, 160, HMI_UI_RELAY_SELF_TEST);
-        create_action_button(card, "STOP", 190, 120, HMI_UI_STOP_ALL);
-        break;
-    default:
-        break;
-    }
+
+    configure_screen_actions(screen);
 
     return card;
 }
 
 static void set_screen_line(hmi_screen_t screen, size_t line, const char *text)
 {
+    if (screen != s_active_screen)
+    {
+        return;
+    }
     if (screen < HMI_SCREEN_COUNT && line < 5u) {
-        set_label_text_if_changed(s_screen_lines[screen][line], text);
+        set_label_text_if_changed(s_content_lines[line], text);
     }
 }
 
@@ -906,8 +978,6 @@ static void update_status_labels(void)
         s_last_perf_us = now_us;
     }
 
-    uint32_t flush_now = s_flush_count;
-
     time_t now = time(NULL);
     struct tm local_time;
     if (s_view_model.time_synchronized && localtime_r(&now, &local_time) != NULL) {
@@ -952,7 +1022,6 @@ static void update_status_labels(void)
     }
 
     s_last_perf_us = now_us;
-    s_last_flush_count = flush_now;
     s_last_status_update_us = now_us;
 }
 
@@ -970,7 +1039,7 @@ static void create_home_screen(void)
     lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 16);
     lv_obj_set_style_bg_color(header, lv_color_hex(0x1D3557), 0);
     lv_obj_set_style_border_width(header, 0, 0);
-    lv_obj_set_style_radius(header, 18, 0);
+    lv_obj_set_style_radius(header, 0, 0);
     lv_obj_set_style_shadow_width(header, 0, 0);
     lv_obj_set_style_pad_all(header, 0, 0);
     lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC | LV_OBJ_FLAG_SCROLL_MOMENTUM);
@@ -1006,7 +1075,7 @@ static void create_home_screen(void)
     lv_obj_set_style_bg_opa(nav, LV_OPA_COVER, 0);
     lv_obj_set_style_border_color(nav, lv_color_hex(0xC7D6E3), 0);
     lv_obj_set_style_border_width(nav, 2, 0);
-    lv_obj_set_style_radius(nav, 14, 0);
+    lv_obj_set_style_radius(nav, 0, 0);
     lv_obj_set_style_shadow_width(nav, 0, 0);
     lv_obj_set_style_pad_all(nav, 0, 0);
     lv_obj_clear_flag(nav, LV_OBJ_FLAG_SCROLLABLE);
@@ -1029,7 +1098,7 @@ static void create_home_screen(void)
                           LV_OBJ_FLAG_SCROLL_CHAIN |
                           LV_OBJ_FLAG_GESTURE_BUBBLE |
                           LV_OBJ_FLAG_SCROLL_ON_FOCUS);
-        lv_obj_set_style_radius(button, 12, 0);
+        lv_obj_set_style_radius(button, 0, 0);
         lv_obj_set_style_pad_all(button, 0, 0);
         lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(button, 1, 0);
@@ -1057,7 +1126,7 @@ static void create_home_screen(void)
     lv_obj_set_style_bg_opa(s_content_root, LV_OPA_COVER, 0);
     lv_obj_set_style_border_color(s_content_root, lv_color_hex(0xC7D6E3), 0);
     lv_obj_set_style_border_width(s_content_root, 2, 0);
-    lv_obj_set_style_radius(s_content_root, 18, 0);
+    lv_obj_set_style_radius(s_content_root, 0, 0);
     lv_obj_set_style_shadow_width(s_content_root, 0, 0);
     lv_obj_set_style_pad_all(s_content_root, 0, 0);
     lv_obj_clear_flag(s_content_root, LV_OBJ_FLAG_SCROLLABLE);
@@ -1070,7 +1139,7 @@ static void create_home_screen(void)
     lv_obj_set_style_bg_opa(footer, LV_OPA_COVER, 0);
     lv_obj_set_style_border_color(footer, lv_color_hex(0xC7D6E3), 0);
     lv_obj_set_style_border_width(footer, 2, 0);
-    lv_obj_set_style_radius(footer, 14, 0);
+    lv_obj_set_style_radius(footer, 0, 0);
     lv_obj_set_style_shadow_width(footer, 0, 0);
     lv_obj_set_style_pad_all(footer, 0, 0);
     lv_obj_clear_flag(footer, LV_OBJ_FLAG_SCROLLABLE);
@@ -1095,7 +1164,7 @@ static void create_home_screen(void)
         lv_obj_set_style_bg_color(cell, lv_color_hex(0xFFFFFF), 0);
         lv_obj_set_style_border_color(cell, lv_color_hex(0x8EA1B4), 0);
         lv_obj_set_style_border_width(cell, 2, 0);
-        lv_obj_set_style_radius(cell, 8, 0);
+        lv_obj_set_style_radius(cell, 0, 0);
         lv_obj_set_style_pad_all(cell, 0, 0);
         lv_obj_clear_flag(cell, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -1126,6 +1195,7 @@ static void create_home_screen(void)
     lv_obj_set_style_text_color(s_label_note, lv_color_hex(0x4A4E69), 0);
 
     s_active_screen = HMI_SCREEN_DASHBOARD;
+    (void)create_screen_body(s_content_root, s_active_screen);
     rebuild_active_screen();
     update_nav_highlight();
 
@@ -1136,23 +1206,20 @@ static void create_home_screen(void)
 #if LVGL_VERSION_MAJOR >= 9
 static void lvgl_flush_cb(lv_display_t *display, const lv_area_t *area, uint8_t *color_map)
 {
-    if (lv_display_flush_is_last(display))
+    esp_err_t err = esp_lcd_panel_draw_bitmap(
+        s_panel,
+        area->x1,
+        area->y1,
+        area->x2 + 1,
+        area->y2 + 1,
+        color_map);
+    if (err != ESP_OK)
     {
-        esp_err_t err = esp_lcd_panel_draw_bitmap(
-            s_panel,
-            area->x1,
-            area->y1,
-            area->x2 + 1,
-            area->y2 + 1,
-            color_map);
-        if (err != ESP_OK)
-        {
-            ESP_LOGW(TAG, "draw_bitmap failed: %d", err);
-        }
-        else
-        {
-            wait_for_vsync_if_available();
-        }
+        ESP_LOGW(TAG, "draw_bitmap failed: %d", err);
+    }
+    else if (lv_display_flush_is_last(display))
+    {
+        wait_for_vsync_if_available();
     }
     s_flush_count++;
     lv_display_flush_ready(display);
@@ -1166,23 +1233,20 @@ static void lvgl_touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 #else
 static void lvgl_flush_cb(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_t *color_map)
 {
-    if (lv_disp_flush_is_last(disp_drv))
+    esp_err_t err = esp_lcd_panel_draw_bitmap(
+        s_panel,
+        area->x1,
+        area->y1,
+        area->x2 + 1,
+        area->y2 + 1,
+        color_map);
+    if (err != ESP_OK)
     {
-        esp_err_t err = esp_lcd_panel_draw_bitmap(
-            s_panel,
-            area->x1,
-            area->y1,
-            area->x2 + 1,
-            area->y2 + 1,
-            color_map);
-        if (err != ESP_OK)
-        {
-            ESP_LOGW(TAG, "draw_bitmap failed: %d", err);
-        }
-        else
-        {
-            wait_for_vsync_if_available();
-        }
+        ESP_LOGW(TAG, "draw_bitmap failed: %d", err);
+    }
+    else if (lv_disp_flush_is_last(disp_drv))
+    {
+        wait_for_vsync_if_available();
     }
     s_flush_count++;
     lv_disp_flush_ready(disp_drv);
@@ -1360,25 +1424,16 @@ static bool init_lvgl_core(void)
 {
     lv_init();
 
-    esp_err_t fb_err = esp_lcd_rgb_panel_get_frame_buffer(
-        s_panel,
-        LVGL_DIRECT_BUFFER_COUNT,
-        (void **)&s_draw_buf_1,
-        (void **)&s_draw_buf_2);
-    if (fb_err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "RGB framebuffer lookup failed: %d", fb_err);
-        return false;
-    }
-
-    size_t draw_pixels = LCD_H_RES * LCD_V_RES;
+    size_t draw_pixels = LCD_H_RES * LVGL_DRAW_BUFFER_LINES;
     size_t draw_bytes = draw_pixels * sizeof(lv_color_t);
+    s_draw_buf_1 = heap_caps_malloc(draw_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_draw_buf_2 = heap_caps_malloc(draw_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (s_draw_buf_1 == NULL || s_draw_buf_2 == NULL)
     {
-        ESP_LOGE(TAG, "RGB framebuffer lookup returned NULL");
+        ESP_LOGE(TAG, "LVGL draw buffer allocation failed (%u bytes each)", (unsigned)draw_bytes);
         return false;
     }
-    ESP_LOGI(TAG, "LVGL direct RGB buffers ready (%u bytes each)", (unsigned)draw_bytes);
+    ESP_LOGI(TAG, "LVGL partial draw buffers ready (%u bytes each)", (unsigned)draw_bytes);
 
 #if LVGL_VERSION_MAJOR >= 9
     lv_display_t *display = lv_display_create(LCD_H_RES, LCD_V_RES);
@@ -1388,7 +1443,7 @@ static bool init_lvgl_core(void)
         return false;
     }
 
-    lv_display_set_buffers(display, s_draw_buf_1, s_draw_buf_2, draw_bytes, LV_DISPLAY_RENDER_MODE_DIRECT);
+    lv_display_set_buffers(display, s_draw_buf_1, s_draw_buf_2, draw_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(display, lvgl_flush_cb);
 
     lv_indev_t *touch = lv_indev_create();
@@ -1409,7 +1464,6 @@ static bool init_lvgl_core(void)
     disp_drv.ver_res = LCD_V_RES;
     disp_drv.flush_cb = lvgl_flush_cb;
     disp_drv.draw_buf = &draw_buf;
-    disp_drv.direct_mode = 1;
     (void)lv_disp_drv_register(&disp_drv);
 
     static lv_indev_drv_t indev_drv;
@@ -1464,6 +1518,27 @@ static void lvgl_task(void *arg)
                 update_status_labels();
             }
             update_screen_blank_timeout(now_us);
+            if (s_last_stack_log_us == 0 ||
+                (now_us - s_last_stack_log_us) >= (LVGL_STACK_LOG_PERIOD_MS * 1000))
+            {
+                uint32_t stack_free_bytes = uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t);
+                if (stack_free_bytes < LVGL_STACK_WARN_BYTES)
+                {
+                    ESP_LOGW(TAG, "LVGL stack low: %u bytes free", (unsigned)stack_free_bytes);
+                }
+                else
+                {
+                    uint32_t flush_delta = s_flush_count - s_last_flush_count;
+                    ESP_LOGI(TAG,
+                             "LVGL stack free: %u bytes, flushes=%lu/%lu ms, active=%s",
+                             (unsigned)stack_free_bytes,
+                             (unsigned long)flush_delta,
+                             (unsigned long)LVGL_STACK_LOG_PERIOD_MS,
+                             s_screen_titles[s_active_screen]);
+                    s_last_flush_count = s_flush_count;
+                }
+                s_last_stack_log_us = now_us;
+            }
             lvgl_unlock();
         }
 
@@ -1536,9 +1611,9 @@ bool hmi_lvgl_port_init(void)
     BaseType_t task_ok = xTaskCreatePinnedToCore(
         lvgl_task,
         "hmi_lvgl",
-        8192,
+        LVGL_TASK_STACK_BYTES,
         NULL,
-        4,
+        LVGL_TASK_PRIO,
         &s_lvgl_task,
         tskNO_AFFINITY);
     if (task_ok != pdPASS)

@@ -8,12 +8,13 @@ static const char *TAG = "hmi_7b_rgb";
 #if CONFIG_HMI_DISPLAY_PROFILE_HIGH_THROUGHPUT
 #define LCD_PIXEL_CLOCK_HZ 30850000
 #define LCD_PROFILE_NAME   "high-throughput"
+#define LCD_RGB_FB_NUM     2
 #else
 #define LCD_PIXEL_CLOCK_HZ 14000000
 #define LCD_PROFILE_NAME   "low-risk"
+#define LCD_RGB_FB_NUM     1
 #endif
 #define LCD_RGB_DATA_WIDTH 16
-#define LCD_RGB_FB_NUM     2
 
 #define LCD_HSYNC_GPIO     46
 #define LCD_VSYNC_GPIO     3

@@ -14,7 +14,9 @@ idf_component_register(SRCS "main.c"
                              event_bus
                              flow_manager
                              hmi_board
+                             http_auth
                              irrigation_engine
+                             mbedtls
                              mqtt_transport
                              nvs_flash
                              ota_manager

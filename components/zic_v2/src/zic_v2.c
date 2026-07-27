@@ -122,9 +122,10 @@ zic_v2_command_decision_t zic_v2_validate_command(
         return ZIC_V2_COMMAND_DUPLICATE;
     }
 
-    strncpy(tracker->command_ids[tracker->next_index], command->command_id,
-            ZIC_V2_COMMAND_ID_MAX - 1u);
-    tracker->command_ids[tracker->next_index][ZIC_V2_COMMAND_ID_MAX - 1u] = '\0';
+        (void)snprintf(tracker->command_ids[tracker->next_index],
+               ZIC_V2_COMMAND_ID_MAX,
+               "%s",
+               command->command_id);
     tracker->next_index = (uint8_t)((tracker->next_index + 1u) % ZIC_V2_DEDUPE_CAPACITY);
     return ZIC_V2_COMMAND_ACCEPTED;
 }

@@ -60,6 +60,11 @@ zic_add_host_test(test_mqtt_v2_contract
 target_include_directories(test_mqtt_v2_contract PRIVATE
     ../components/zic_v2/include)
 
+zic_add_host_test(test_http_auth
+    test_http_auth.c
+    ../components/http_auth/src/http_auth.c)
+target_include_directories(test_http_auth PRIVATE ../components/http_auth/include)
+
 zic_add_host_test(test_irrigation_engine
     test_irrigation_engine.c
     ../components/irrigation_engine/src/irrigation_engine.c

@@ -226,7 +226,7 @@ destination. Each source ID is written explicitly to permit machine coverage che
 | Volume 2, Chapter 4 HAL | HAL-001, HAL-002, HAL-003, HAL-004, HAL-005, HAL-006 | `Partial` | HAL boundaries exist for active hardware; API and hardware-verification breadth incomplete | 5, 10 |
 | Volume 2, Chapter 7 relay architecture | REL-001, REL-002, REL-003, REL-004, REL-005, REL-006 | `Partial` | Exclusive relay ownership/interlocks and hydraulic response diagnostics exist; installed hardware has no contact/current feedback | 5 |
 | Volume 2, Chapter 13 MQTT architecture | MQTT-001, MQTT-002, MQTT-003, MQTT-004 | `Implemented` | Single transport owns MQTT v5 session/QoS; zic_v2 owns the documented schema/validation subset | [MQTT v5 contract](MQTT-V5-CONTRACT.md) and [host contract test](../test/test_mqtt_v2_contract.c) | - |
-| Volume 2/3 security architecture | SEC-001, SEC-002, SEC-003, SEC-004, SEC-005, SEC-006 | `Partial` | Signed OTA and MQTT TLS exist; HTTP auth, authorization, replay controls, hardware secure boot and flash encryption remain open | 2, 3, 7 |
+| Volume 2/3 security architecture | SEC-001, SEC-002, SEC-003, SEC-004, SEC-005, SEC-006 | `Partial` | Signed OTA, MQTT TLS and HTTP admin bearer verification/rate limiting exist; device allow/deny evidence, replay controls, hardware secure boot and flash encryption remain open | [HTTP auth contract](HTTP-AUTH.md), [HTTP auth test](../test/test_http_auth.c), 2, 3, 7 |
 | Volume 3, Chapter 1 communications | COM-001, COM-002, COM-003, COM-004, COM-005 | `Partial` | Explicit MQTT v5 subset, TLS authorization gate and recovery policy implemented; routed broker acceptance pending | 10 |
 | Volume 3, Chapter 20 API compliance | API-001, API-002, API-003, API-004, API-005, API-006, API-007, API-008, API-009, API-010 | `Partial` | Supported subset and exclusions are documented; full broker acceptance matrix remains pending | [MQTT v5 contract](MQTT-V5-CONTRACT.md), 10 |
 | Volume 4, Chapter 1 HMI principles | HMI-001, HMI-002, HMI-003, HMI-004, HMI-005 | `Partial` | Operational LVGL UI exists; full service/safety/usability evidence incomplete | 9 |
@@ -266,7 +266,7 @@ through the following stable chapter-level keys until the source documents assig
 | MEP-V2-C15-STORAGE | Typed persistent data, retention, integrity and diagnostics | `Partial` | Event/weather persistence, config recovery and CRC alarm history exist; complete user backup/data model remains incomplete | 9 |
 | MEP-V2-C16-OTA | Trusted download, validation, health confirmation and rollback | `Partial` | RSA-signed updates, HTTPS remote policy, live health confirmation, rollback guard and persistent audit integrated | Physical rollback, interruption and production-key FAT pending | 3, 10 |
 | MEP-V2-C17-DIAG | Authoritative system health, task/resource/event/sensor metrics | `Implemented` | Live managers feed tested health policy; bounded HTTP/MQTT snapshot and OTA gate expose heap, task, event, alarm, sensor, communication and storage state | [Diagnostics policy tests](../test/test_diagnostics_policy.c); signed ESP32-S3 OTA and live `/health` metrics verified 2026-07-19 | - |
-| MEP-V2-C19-SEC | Authentication, authorization, TLS, secure boot and flash encryption | `Missing` | MQTT TLS exists; HTTP auth, secure boot and flash encryption absent | 2, 3 |
+| MEP-V2-C19-SEC | Authentication, authorization, TLS, secure boot and flash encryption | `Partial` | MQTT TLS and HTTP admin bearer verification/rate limiting exist; device acceptance, secure boot and flash encryption remain open | [HTTP auth contract](HTTP-AUTH.md), [HTTP auth test](../test/test_http_auth.c), 2, 3 |
 | MEP-V3-MQTT-API | Namespace, schemas, transaction outcomes, QoS and integrations | `Partial` | Supported v2 subset has deterministic correlated outcomes and host coverage; routed broker acceptance remains pending | [MQTT v5 contract](MQTT-V5-CONTRACT.md), 10 |
 | MEP-V3-C18-SEC | MQTT/API authentication, authorization and hardening | `Partial` | Commands require TLS plus credentials and use bounded replay suppression; broker ACL proof and durable restart replay journal remain open | 2, 10 |
 | MEP-V3-C19-REST | Future full REST/WebSocket API | `Not Applicable` | Explicit future interface, excluded from current baseline | - |
@@ -298,15 +298,15 @@ Chapter-level rows are not included in these counts.
 | Status | Count |
 |---|---:|
 | Implemented | 19 |
-| Partial | 145 |
-| Missing | 23 |
+| Partial | 146 |
+| Missing | 22 |
 | Not Verified | 35 |
 | Not Applicable | 3 |
 | **Total explicit occurrences** | **225** |
 
 The principal release blockers are:
 
-1. unauthenticated HTTP control and OTA endpoints;
+1. HTTP control-plane allow/deny device acceptance and penetration evidence;
 2. production Secure Boot/flash-encryption provisioning and physical OTA interruption evidence;
 3. installed per-zone hydraulic commissioning and physical threshold/fault-injection evidence;
 4. pending physical valve-response fault injection and unavailable electrical contact/current feedback;

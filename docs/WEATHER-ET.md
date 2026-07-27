@@ -5,7 +5,8 @@ and applies weather adjustments only to automatically scheduled irrigation.
 
 ## Weather ingestion
 
-Send a snapshot to `POST /weather` as JSON:
+Send a snapshot to `POST /weather` as authenticated JSON. See
+[HTTP-AUTH.md](HTTP-AUTH.md) for bearer-token provisioning.
 
 ```json
 {
@@ -22,7 +23,7 @@ Send a snapshot to `POST /weather` as JSON:
 
 The timestamp may be omitted after SNTP synchronization. Required percentages must be in
 the range 0-100, and rain, wind and radiation values must be non-negative. A successful
-request returns HTTP 200 with `{"status":"accepted"}`.
+authenticated request returns HTTP 200 with `{"status":"accepted"}`.
 
 The endpoint is an adapter boundary for NWS, OpenWeatherMap, Home Assistant or another
 provider. Provider credentials and polling do not live in the controller firmware.

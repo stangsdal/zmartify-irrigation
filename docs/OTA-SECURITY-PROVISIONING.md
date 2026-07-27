@@ -27,13 +27,15 @@ access. Hardware Secure Boot and flash encryption are separate manufacturing con
 ```sh
 source ~/.espressif/v6.0.1/esp-idf/export.sh
 ./scripts/setup-ota-signing-key.sh
+./scripts/configure-http-auth.sh
 idf.py build
-./scripts/ota-direct.sh 192.168.10.113 build/zmartify_irrigation.bin
+ZIC_HTTP_ADMIN_TOKEN='...' ./scripts/ota-direct.sh 192.168.10.113 build/zmartify_irrigation.bin
 ```
 
 The deployable file is `build/zmartify_irrigation.bin`. The
 `build/zmartify_irrigation-unsigned.bin` intermediate must never be uploaded. The direct upload
-script verifies the signature with `OTA_VERIFY_KEY` before sending any bytes.
+script verifies the signature with `OTA_VERIFY_KEY` before sending any bytes. The upload request
+also requires the HTTP administrator bearer token described in [HTTP-AUTH.md](HTTP-AUTH.md).
 
 ## Rollback Provisioning
 

@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define CONFIG_FLOW_MAX_LPM_X10          5000u
@@ -189,31 +190,42 @@ bool config_migrate_to_current(zic_config_t *config)
         return false;
     }
 
-    zic_config_t candidate = *config;
-    while (candidate.schema_version != CONFIG_SCHEMA_VERSION) {
-        bool migrated = false;
-        switch (candidate.schema_version) {
-        case 1u:
-            migrated = config_migrate_v1(&candidate);
-            break;
-        case 2u:
-            migrated = config_migrate_v2(&candidate);
-            break;
-        case 3u:
-            migrated = config_migrate_v3(&candidate);
-            break;
-        default:
-            return false;
-        }
-        if (!migrated) {
-            return false;
-        }
-    }
-    if (!config_validate_safety(&candidate)) {
+    zic_config_t *candidate = malloc(sizeof(*candidate));
+    if (candidate == NULL) {
         return false;
     }
-    *config = candidate;
-    return true;
+    *candidate = *config;
+
+    bool ok = true;
+    while (candidate->schema_version != CONFIG_SCHEMA_VERSION) {
+        bool migrated = false;
+        switch (candidate->schema_version) {
+        case 1u:
+            migrated = config_migrate_v1(candidate);
+            break;
+        case 2u:
+            migrated = config_migrate_v2(candidate);
+            break;
+        case 3u:
+            migrated = config_migrate_v3(candidate);
+            break;
+        default:
+            ok = false;
+            break;
+        }
+        if (!ok || !migrated) {
+            ok = false;
+            break;
+        }
+    }
+    if (ok && !config_validate_safety(candidate)) {
+        ok = false;
+    }
+    if (ok) {
+        *config = *candidate;
+    }
+    free(candidate);
+    return ok;
 }
 
 bool config_apply_zone_commissioning(config_zone_t *zone,

@@ -110,6 +110,36 @@ evidence before further product changes.
 - Authentication secrets never appear in logs, MQTT payloads or HTTP responses.
 - Existing OTA tooling supports the selected authentication mechanism.
 
+**Implementation and verification (2026-07-26):**
+
+- Added a reusable `http_auth` component that validates `Authorization: Bearer` admin tokens by
+  hashing the received token with SHA-256 and comparing it to a provisioned verifier in constant
+  time. Firmware stores only `main/http_auth.local.h`, which is excluded from Git; if the verifier
+  is absent or all-zero, protected endpoints fail closed with HTTP 503.
+- `POST /ota`, `POST /reboot`, `POST /config/network` and `POST /weather` now require the admin
+  bearer token before payload parsing or state changes. Missing, malformed or invalid credentials
+  return HTTP 401 with a bearer challenge and log only the failure category, never the credential.
+- Protected mutating endpoints enforce bounded payload sizes and content types. Failed
+  authentication attempts are rate-limited after five failures in a one-minute window; a valid
+  administrator request clears the counter.
+- Read-only diagnostics remain intentionally unauthenticated for local service visibility:
+  `GET /health`, `GET /logs`, `GET /storage/sd-card` and `GET /config/network`. Network-config
+  reads expose whether a password is configured but not the password value.
+- Added `scripts/configure-http-auth.sh` for initial verifier provisioning and rotation, updated
+  direct OTA tooling to require `ZIC_HTTP_ADMIN_TOKEN`, and documented the procedure in
+  [HTTP-AUTH.md](HTTP-AUTH.md). The release gate now blocks candidate builds when the local admin
+  verifier has not been provisioned.
+- Host tests cover configured, missing, malformed and denied bearer-token decisions. ESP-IDF build
+  succeeds with the fail-closed default verifier.
+- Device validation on ESP32-S3 `192.168.10.113` built and OTA-deployed signed firmware
+  `build-copilot-diag/zmartify_irrigation.bin` with SHA-256
+  `4a3c67bd01c9c60ec7fab6d4b4c35ba7b78d50b202023ff4f9b2c1b8f13cc8a7`. The OTA health gate
+  recorded `ota image confirmed valid`; `/health` reported `ota_acceptable:true`, healthy runtime,
+  healthy storage, MQTT connected and zero event drops. An unauthenticated `POST /weather` returned
+  HTTP 401, and an authenticated JSON weather update returned `{"status":"accepted"}`.
+- Full device authorization matrix for `/config/network` and reboot safety cases plus penetration
+  acceptance remain open before closing the `HTTP-AUTH` release blocker.
+
 **Commit:** `Plan 2 Step 2: Secure HTTP control endpoints`
 
 ---
@@ -593,15 +623,15 @@ For each step:
 | Step | Status | Commit |
 |---|---|---|
 | 1. Living RTM | Complete | `Plan 2 Step 1: Establish MEP requirements traceability` |
-| 2. HTTP authentication | Not started | - |
+| 2. HTTP authentication | Firmware deployed; full device authorization matrix and penetration evidence pending | Pending commit |
 | 3. OTA trust and rollback | Signed OTA and automatic rollback hardware-verified; power-interruption FAT pending | `Plan 2 Step 3: Enforce trusted OTA and rollback` |
 | 4. Hydraulic safety configuration | Firmware complete; installed hydraulic commissioning pending | `Plan 2 Step 4: Externalize hydraulic safety configuration` |
 | 5. Relay and valve diagnostics | Firmware complete; hydraulic fault injection pending | `Plan 2 Step 5: Add relay and valve diagnostics` |
 | 6. Integrated diagnostics | Firmware and device metrics complete; HTTP authentication pending Step 2 | `Plan 2 Step 6: Integrate authoritative system diagnostics` |
 | 7. MQTT compliance | Firmware/device complete; routed authenticated broker acceptance pending | `Plan 2 Step 7: Complete MQTT contract compliance` |
-| 8. Config migration and alarm lifecycle | Not started | - |
-| 9. HMI completion | Not started | - |
-| 10. FAT/SAT release gate | Not started | - |
+| 8. Config migration and alarm lifecycle | Firmware complete; protected field workflows and release evidence pending | `Plan 2 Step 8: Add config migration and alarm lifecycle` |
+| 9. HMI completion | Firmware complete; screenshot regression and physical acceptance pending | `Plan 2 Step 9: Complete controller HMI workflows` |
+| 10. FAT/SAT release gate | Procedures and software gate implemented; field release blocked by open deviations | `Plan 2 Step 10: Establish FAT and SAT release gate` |
 
 ## 7. Definition of Plan Completion
 

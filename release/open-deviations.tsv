@@ -1,6 +1,6 @@
 id	status	severity	requirement	evidence_required	disposition
 RTM-CLOSURE	OPEN	BLOCKER	Close defer or formally accept every applicable RTM requirement	Approved RTM with no undispositioned release-critical gaps	Release blocked
-HTTP-AUTH	OPEN	BLOCKER	Authenticate and authorize HTTP OTA/config/weather endpoints	Penetration and authorization tests	Release blocked
+HTTP-AUTH	OPEN	BLOCKER	Verify HTTP OTA/config/weather authentication and authorization on device	Device allow/deny record plus penetration and authorization tests	Release blocked
 SECURE-BOOT	OPEN	BLOCKER	Provision production Secure Boot and flash encryption	Approved manufacturing instruction and eFuse readback	Release blocked
 FAT-PRODUCTION	OPEN	BLOCKER	Pass FAT on production-equivalent controller	Signed FAT record with equipment serials	Release blocked
 SAT-INSTALLATION	OPEN	BLOCKER	Pass SAT at installed irrigation site	Signed SAT record or approved site deviations	Release blocked

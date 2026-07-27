@@ -44,9 +44,17 @@ if ! espsecure verify-signature --version 2 --keyfile "$PUBLIC_KEY" "$FIRMWARE";
 fi
 
 echo "Signature verified; uploading $FIRMWARE to http://$DEVICE_IP/ota"
+auth_args=()
+if [[ -n "${ZIC_HTTP_ADMIN_TOKEN:-}" ]]; then
+    auth_args=(-H "Authorization: Bearer ${ZIC_HTTP_ADMIN_TOKEN}")
+else
+    echo "Error: set ZIC_HTTP_ADMIN_TOKEN for authenticated OTA upload"
+    exit 1
+fi
 curl --fail --show-error --connect-timeout 10 --max-time 180 \
     -H "Expect:" \
     -H "Content-Type: application/octet-stream" \
+    "${auth_args[@]}" \
     --data-binary "@$FIRMWARE" \
     "http://$DEVICE_IP/ota"
 

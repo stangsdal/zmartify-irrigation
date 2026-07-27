@@ -28,6 +28,7 @@
 #include "flow_manager.h"
 #include "hal.h"
 #include "hmi_7b_ioexp.h"
+#include "http_auth.h"
 #include "irrigation_engine.h"
 #include "mqtt_transport.h"
 #include "ota_manager.h"
@@ -41,6 +42,7 @@
 #include "hmi_board.h"
 #include "version.h"
 #include "zic_v2.h"
+#include "psa/crypto.h"
 #include <time.h>
 
 #if __has_include("wifi_credentials.local.h")
@@ -48,6 +50,12 @@
 #else
 static const uint8_t zic_wifi_ssid[] = {0};
 static const uint8_t zic_wifi_password[] = {0};
+#endif
+
+#if __has_include("http_auth.local.h")
+#include "http_auth.local.h"
+#else
+static const uint8_t zic_http_admin_token_sha256[HTTP_AUTH_SHA256_LEN] = {0};
 #endif
 
 #ifndef ZIC_RELAY_SELF_TEST
@@ -92,6 +100,9 @@ static zic_log_entry_t s_log_buffer[ZIC_LOG_PERSIST_CAPACITY];
 #ifndef ZIC_SD_CARD_IOEXP_CS_BIT
 #define ZIC_SD_CARD_IOEXP_CS_BIT 4
 #endif
+
+#define ZIC_HTTP_AUTH_FAILURE_LIMIT 5u
+#define ZIC_HTTP_AUTH_FAILURE_WINDOW_US (60LL * 1000LL * 1000LL)
 
 /* Device identity for Zmartify v2 topics; must match the edge registry
  * device_id assigned during onboarding (lowercase, hyphenated). */
@@ -174,6 +185,8 @@ static alarm_manager_snapshot_t s_alarm_snapshot;
 static httpd_handle_t s_ota_http_server;
 static sdmmc_card_t *s_sd_card;
 static char s_sd_card_last_error[96] = "not initialized";
+static uint32_t s_http_auth_failures;
+static int64_t s_http_auth_window_start_us;
 
 static void zic_publish_v2_outcome(zic_app_context_t *ctx,
                                    const char *correlation_id,
@@ -377,6 +390,100 @@ static bool zic_ota_image_is_confirmed(void)
     return image_state != ESP_OTA_IMG_PENDING_VERIFY;
 }
 
+static bool zic_http_auth_sha256(const uint8_t *input,
+                                 size_t input_len,
+                                 uint8_t output[HTTP_AUTH_SHA256_LEN])
+{
+    size_t output_len = 0;
+    return psa_hash_compute(PSA_ALG_SHA_256,
+                            input,
+                            input_len,
+                            output,
+                            HTTP_AUTH_SHA256_LEN,
+                            &output_len) == PSA_SUCCESS &&
+        output_len == HTTP_AUTH_SHA256_LEN;
+}
+
+static bool zic_http_auth_failure_is_limited(void)
+{
+    int64_t now_us = esp_timer_get_time();
+
+    if (s_http_auth_window_start_us == 0 ||
+        now_us - s_http_auth_window_start_us > ZIC_HTTP_AUTH_FAILURE_WINDOW_US) {
+        s_http_auth_window_start_us = now_us;
+        s_http_auth_failures = 0;
+    }
+
+    ++s_http_auth_failures;
+    return s_http_auth_failures > ZIC_HTTP_AUTH_FAILURE_LIMIT;
+}
+
+static void zic_http_auth_reset_failures(void)
+{
+    s_http_auth_failures = 0;
+    s_http_auth_window_start_us = 0;
+}
+
+static esp_err_t zic_http_require_admin(httpd_req_t *request)
+{
+    char authorization[128];
+    size_t header_len = httpd_req_get_hdr_value_len(request, "Authorization");
+    http_auth_result_t auth_result;
+
+    if (header_len == 0u || header_len >= sizeof(authorization) ||
+        httpd_req_get_hdr_value_str(request, "Authorization", authorization,
+                                    sizeof(authorization)) != ESP_OK) {
+        authorization[0] = '\0';
+    }
+
+    auth_result = http_auth_check_bearer(authorization,
+                                         zic_http_admin_token_sha256,
+                                         zic_http_auth_sha256);
+    if (auth_result == HTTP_AUTH_RESULT_AUTHORIZED) {
+        zic_http_auth_reset_failures();
+        return ESP_OK;
+    }
+
+    ESP_LOGW(TAG, "HTTP admin authorization failed: %s", http_auth_result_name(auth_result));
+    if (auth_result == HTTP_AUTH_RESULT_NOT_CONFIGURED) {
+        httpd_resp_set_status(request, "503 Service Unavailable");
+        httpd_resp_set_type(request, "text/plain");
+        httpd_resp_sendstr(request, "HTTP admin auth not provisioned\n");
+        return ESP_FAIL;
+    }
+
+    if (zic_http_auth_failure_is_limited()) {
+        httpd_resp_set_status(request, "429 Too Many Requests");
+        httpd_resp_set_type(request, "text/plain");
+        httpd_resp_sendstr(request, "Too many authentication failures\n");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_hdr(request, "WWW-Authenticate", "Bearer realm=\"zmartify-admin\"");
+    httpd_resp_send_err(request, HTTPD_401_UNAUTHORIZED, "Unauthorized");
+    return ESP_FAIL;
+}
+
+static esp_err_t zic_http_require_content_type(httpd_req_t *request,
+                                               const char *expected)
+{
+    char content_type[64];
+    size_t header_len = httpd_req_get_hdr_value_len(request, "Content-Type");
+    size_t expected_len = expected != NULL ? strlen(expected) : 0u;
+
+    if (request == NULL || expected == NULL || expected_len == 0u ||
+        header_len == 0u || header_len >= sizeof(content_type) ||
+        httpd_req_get_hdr_value_str(request, "Content-Type", content_type,
+                                    sizeof(content_type)) != ESP_OK ||
+        strncmp(content_type, expected, expected_len) != 0 ||
+        (content_type[expected_len] != '\0' && content_type[expected_len] != ';')) {
+        httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Unsupported content type");
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
 static void zic_remote_ota_task(void *arg)
 {
     char *firmware_url = arg;
@@ -402,6 +509,13 @@ static void zic_remote_ota_task(void *arg)
 
 static esp_err_t zic_ota_http_handler(httpd_req_t *request)
 {
+    if (zic_http_require_admin(request) != ESP_OK) {
+        return ESP_FAIL;
+    }
+    if (zic_http_require_content_type(request, "application/octet-stream") != ESP_OK) {
+        return ESP_FAIL;
+    }
+
     const esp_partition_t *partition = esp_ota_get_next_update_partition(NULL);
     if (partition == NULL || request->content_len <= 0 ||
         (size_t)request->content_len > partition->size) {
@@ -479,6 +593,10 @@ static esp_err_t zic_ota_http_handler(httpd_req_t *request)
 
 static esp_err_t zic_reboot_http_handler(httpd_req_t *request)
 {
+    if (zic_http_require_admin(request) != ESP_OK) {
+        return ESP_FAIL;
+    }
+
     if (!zic_ota_image_is_confirmed()) {
         httpd_resp_set_status(request, "409 Conflict");
         httpd_resp_set_type(request, "text/plain");
@@ -652,10 +770,6 @@ static void zic_sd_card_storage_snapshot(zic_v2_storage_t *storage)
     storage->sd_card_mount_point = ZIC_SD_CARD_MOUNT_POINT;
     storage->sd_card_last_error = s_sd_card_last_error;
 
-    if (s_sd_card == NULL) {
-        (void)zic_sd_card_mount(false);
-    }
-
     storage->sd_card_mounted = s_sd_card != NULL;
     if (!storage->sd_card_mounted) {
         return;
@@ -771,6 +885,13 @@ static esp_err_t zic_network_config_get_http_handler(httpd_req_t *request)
 
 static esp_err_t zic_network_config_http_handler(httpd_req_t *request)
 {
+    if (zic_http_require_admin(request) != ESP_OK) {
+        return ESP_FAIL;
+    }
+    if (zic_http_require_content_type(request, "application/json") != ESP_OK) {
+        return ESP_FAIL;
+    }
+
     char body[512];
     if (request->content_len <= 0 || request->content_len >= (int)sizeof(body)) {
         httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid config payload size");
@@ -853,6 +974,13 @@ static bool zic_json_float(const cJSON *json, const char *key, float *value, boo
 
 static esp_err_t zic_weather_http_handler(httpd_req_t *request)
 {
+    if (zic_http_require_admin(request) != ESP_OK) {
+        return ESP_FAIL;
+    }
+    if (zic_http_require_content_type(request, "application/json") != ESP_OK) {
+        return ESP_FAIL;
+    }
+
     if (request->content_len <= 0 || request->content_len >= 512 || s_ctx_lock == NULL) {
         httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid weather payload");
         return ESP_FAIL;
@@ -1357,7 +1485,10 @@ static void zic_mqtt_on_message(const char *topic,
         if (!schema_valid) {
             reason = ZIC_V2_REASON_INVALID_TIMESTAMP;
         }
-        strncpy(cmd.command_id, v2_command.command_id, sizeof(cmd.command_id) - 1u);
+        (void)snprintf(cmd.command_id,
+                   sizeof(cmd.command_id),
+                   "%s",
+                   v2_command.command_id);
         cJSON_Delete(json);
 
         if (decision == ZIC_V2_COMMAND_DUPLICATE) {

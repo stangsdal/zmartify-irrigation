@@ -10,6 +10,7 @@ FIRMWARE_BUILD_DIR="${FIRMWARE_BUILD_DIR:-$PROJECT_ROOT/build-release}"
 SIGNING_KEY="${SIGNING_KEY:-$PROJECT_ROOT/keys/ota_signing_key.pem}"
 MANIFEST_PATH="${MANIFEST_PATH:-$FIRMWARE_BUILD_DIR/release-manifest.txt}"
 APP_PARTITION_SIZE=$((0x1a9000))
+HTTP_AUTH_FILE="$PROJECT_ROOT/main/http_auth.local.h"
 
 mode="release"
 case "${1:-}" in
@@ -62,6 +63,11 @@ fi
 
 if [[ ! -f "$SIGNING_KEY" ]]; then
     echo "BLOCKED: signing key unavailable: $SIGNING_KEY" >&2
+    exit 2
+fi
+if [[ ! -f "$HTTP_AUTH_FILE" ]]; then
+    echo "BLOCKED: HTTP admin verifier unavailable: $HTTP_AUTH_FILE" >&2
+    echo "Run scripts/configure-http-auth.sh before building a release candidate." >&2
     exit 2
 fi
 if ! command -v idf.py >/dev/null 2>&1 || ! command -v espsecure >/dev/null 2>&1; then
