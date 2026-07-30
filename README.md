@@ -31,3 +31,6 @@ Firmware builds should use ESP-IDF's Ninja toolchain and Python environment. Avo
 ## Documentation
 
 - [MQTT Command Interface](docs/mqtt-command-interface.md)
+- [Program and schedule audit (2026-07-29)](docs/PROGRAM-SCHEDULE-AUDIT-2026-07-29.md)
+- [Program and schedule implementation checklist (2026-07-29)](docs/PROGRAM-SCHEDULE-IMPLEMENTATION-CHECKLIST-2026-07-29.md)
+- [MQTT v2 program and schedule sync contract](docs/MQTT-V2-PROGRAM-SCHEDULE-SYNC-CONTRACT.md)

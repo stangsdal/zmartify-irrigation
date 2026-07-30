@@ -69,6 +69,7 @@ typedef enum {
     HMI_UI_ACKNOWLEDGE_ALARM,
     HMI_UI_CLEAR_ALARM,
     HMI_UI_RELAY_SELF_TEST,
+    HMI_UI_REBOOT,
 } hmi_ui_action_t;
 
 static esp_lcd_panel_handle_t s_panel = NULL;
@@ -112,6 +113,7 @@ static hmi_controller_t s_controller;
 static hmi_snapshot_fn s_snapshot = NULL;
 static void *s_bindings_context = NULL;
 static hmi_view_model_t s_view_model;
+static uint8_t s_last_active_zone = 0u;
 static uint8_t s_selected_zone = 1u;
 static uint8_t s_selected_program = 1u;
 static uint16_t s_selected_runtime_minutes = 10u;
@@ -506,6 +508,10 @@ static void handle_ui_action(hmi_ui_action_t ui_action)
         action.type = HMI_ACTION_RELAY_SELF_TEST;
         request_action(&action);
         break;
+    case HMI_UI_REBOOT:
+        action.type = HMI_ACTION_REBOOT;
+        request_action(&action);
+        break;
     default:
         break;
     }
@@ -687,8 +693,9 @@ static void configure_screen_actions(hmi_screen_t screen)
         break;
     case HMI_SCREEN_SETTINGS:
         configure_action_button(0, "Relay test", 18, 160, HMI_UI_RELAY_SELF_TEST);
-        configure_action_button(1, "STOP", 190, 120, HMI_UI_STOP_ALL);
-        s_action_count = 2;
+        configure_action_button(1, "Reboot", 190, 140, HMI_UI_REBOOT);
+        configure_action_button(2, "STOP", 350, 120, HMI_UI_STOP_ALL);
+        s_action_count = 3;
         break;
     default:
         break;
@@ -858,11 +865,26 @@ static void set_screen_line(hmi_screen_t screen, size_t line, const char *text)
 static void update_view_labels(void)
 {
     char text[160];
+    const bool zone_active = s_view_model.active_zone > 0u;
+    const char *zone_name = s_view_model.active_zone_name[0] != '\0'
+        ? s_view_model.active_zone_name
+        : NULL;
+    const char *program_name = s_view_model.active_program_name[0] != '\0'
+        ? s_view_model.active_program_name
+        : NULL;
 
-    snprintf(text, sizeof(text), "Controller: %s  |  Active zone: %u  |  Remaining: %lu s",
-             controller_state_name(s_view_model.controller_state),
-             (unsigned)s_view_model.active_zone,
-             (unsigned long)s_view_model.remaining_seconds);
+    if (zone_active && zone_name != NULL) {
+        snprintf(text, sizeof(text), "Controller: %s  |  %s (Zone %u)  |  %lu s left",
+                 controller_state_name(s_view_model.controller_state),
+                 zone_name,
+                 (unsigned)s_view_model.active_zone,
+                 (unsigned long)s_view_model.remaining_seconds);
+    } else {
+        snprintf(text, sizeof(text), "Controller: %s  |  Active zone: %u  |  Remaining: %lu s",
+                 controller_state_name(s_view_model.controller_state),
+                 (unsigned)s_view_model.active_zone,
+                 (unsigned long)s_view_model.remaining_seconds);
+    }
     set_screen_line(HMI_SCREEN_DASHBOARD, 0, text);
     snprintf(text, sizeof(text), "Weather: %.1f C  |  Humidity: %u%%  |  ET: %.2f mm",
              (double)s_view_model.temperature_c_x10 / 10.0,
@@ -882,13 +904,29 @@ static void update_view_labels(void)
              s_view_model.config_safe_mode ? "  |  CONFIG SAFE MODE" : "");
     set_screen_line(HMI_SCREEN_DASHBOARD, 4, text);
 
-    snprintf(text, sizeof(text), "Current: %s  |  Zone %u  |  %lu s remaining",
-             controller_state_name(s_view_model.controller_state),
-             (unsigned)s_view_model.active_zone,
-             (unsigned long)s_view_model.remaining_seconds);
+    if (zone_active && zone_name != NULL) {
+        snprintf(text, sizeof(text), "Current: %s  |  %s (Zone %u)  |  %lu s left",
+                 controller_state_name(s_view_model.controller_state),
+                 zone_name,
+                 (unsigned)s_view_model.active_zone,
+                 (unsigned long)s_view_model.remaining_seconds);
+    } else {
+        snprintf(text, sizeof(text), "Current: %s  |  Zone %u  |  %lu s remaining",
+                 controller_state_name(s_view_model.controller_state),
+                 (unsigned)s_view_model.active_zone,
+                 (unsigned long)s_view_model.remaining_seconds);
+    }
     set_screen_line(HMI_SCREEN_IRRIGATION, 0, text);
-    snprintf(text, sizeof(text), "Manual selection: Zone %u for %u minutes",
-             (unsigned)s_selected_zone, (unsigned)s_selected_runtime_minutes);
+    if (program_name != NULL) {
+        snprintf(text, sizeof(text), "Scheduled program active: %s",
+                 program_name);
+    } else if (zone_active && zone_name != NULL) {
+        snprintf(text, sizeof(text), "Live irrigation active on %s",
+                 zone_name);
+    } else {
+        snprintf(text, sizeof(text), "Manual selection: Zone %u for %u minutes",
+                 (unsigned)s_selected_zone, (unsigned)s_selected_runtime_minutes);
+    }
     set_screen_line(HMI_SCREEN_IRRIGATION, 1, text);
     snprintf(text, sizeof(text), "Program selection: Program %u (%s)  |  %u enabled",
              (unsigned)s_selected_program,
@@ -901,7 +939,8 @@ static void update_view_labels(void)
     set_screen_line(HMI_SCREEN_IRRIGATION, 3, text);
     set_screen_line(HMI_SCREEN_IRRIGATION, 4,
                     s_view_model.config_safe_mode ? "Commands inhibited: configuration safe mode"
-                                                  : "Start and program actions require confirmation");
+                                                  : zone_active ? "Irrigation is currently running"
+                                                                : "Start and program actions require confirmation");
 
     snprintf(text, sizeof(text), "Temperature: %.1f C  |  Humidity: %u%%",
              (double)s_view_model.temperature_c_x10 / 10.0,
@@ -970,6 +1009,12 @@ static void update_status_labels(void)
             s_view_model = snapshot;
         }
     }
+    if (s_view_model.active_zone > 0u && s_last_active_zone == 0u &&
+        s_active_screen != HMI_SCREEN_IRRIGATION) {
+        s_active_screen = HMI_SCREEN_IRRIGATION;
+        rebuild_active_screen();
+    }
+    s_last_active_zone = s_view_model.active_zone;
     update_view_labels();
 
     int64_t now_us = esp_timer_get_time();

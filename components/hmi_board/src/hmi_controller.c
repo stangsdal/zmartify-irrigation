@@ -16,6 +16,7 @@ static bool action_is_valid(const hmi_action_t *action)
         return action->program_id >= 1u && action->program_id <= 8u;
     case HMI_ACTION_STOP_ALL:
     case HMI_ACTION_CLEAR_RAIN_DELAY:
+    case HMI_ACTION_REBOOT:
         return true;
     case HMI_ACTION_SET_RAIN_DELAY:
         return action->rain_delay_hours >= 1u && action->rain_delay_hours <= 8760u;
@@ -129,6 +130,8 @@ const char *hmi_controller_confirmation_text(const hmi_action_t *action)
         return "Clear resolved alarm and release lockout?";
     case HMI_ACTION_RELAY_SELF_TEST:
         return "Run relay test across all outputs?";
+    case HMI_ACTION_REBOOT:
+        return "Reboot controller now?";
     case HMI_ACTION_STOP_ALL:
     default:
         return "Confirm action";

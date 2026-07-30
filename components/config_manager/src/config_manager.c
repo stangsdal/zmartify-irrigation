@@ -708,6 +708,80 @@ cfg_result_t config_set_program(uint8_t program_index, const config_program_t *i
     return CFG_OK;
 }
 
+cfg_result_t config_replace_programs(const config_program_t *programs,
+                                     uint8_t program_count,
+                                     const char *timezone)
+{
+    if (!s_initialized)
+    {
+        return CFG_NOT_INITIALIZED;
+    }
+    if ((programs == NULL && program_count != 0u) || program_count > CONFIG_MAX_PROGRAMS)
+    {
+        return CFG_INVALID_PARAM;
+    }
+    if (timezone != NULL && timezone[0] != '\0' &&
+        strnlen(timezone, CONFIG_TZ_LEN) >= CONFIG_TZ_LEN)
+    {
+        return CFG_INVALID_PARAM;
+    }
+    if (s_safe_mode)
+    {
+        return CFG_SAFE_MODE;
+    }
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+
+    zic_config_t candidate = s_config;
+    memset(candidate.programs, 0, sizeof(candidate.programs));
+    if (program_count > 0u)
+    {
+        memcpy(candidate.programs, programs, sizeof(config_program_t) * program_count);
+    }
+    bool timezone_changed = false;
+    if (timezone != NULL && timezone[0] != '\0')
+    {
+        timezone_changed = strcmp(candidate.network.timezone, timezone) != 0;
+        strncpy(candidate.network.timezone, timezone, CONFIG_TZ_LEN - 1u);
+        candidate.network.timezone[CONFIG_TZ_LEN - 1u] = '\0';
+    }
+
+    if (!config_validate_safety(&candidate))
+    {
+        xSemaphoreGive(s_lock);
+        return CFG_VALIDATION_ERROR;
+    }
+
+    zic_config_t previous = s_config;
+    bool previous_dirty = s_dirty;
+    uint32_t previous_change_mask = s_change_mask;
+
+    s_config = candidate;
+    s_dirty = true;
+    s_change_mask |= CONFIG_CHANGE_PROGRAMS;
+    if (timezone_changed)
+    {
+        s_change_mask |= CONFIG_CHANGE_NETWORK;
+    }
+
+    cfg_result_t result = save_to_nvs();
+    if (result == CFG_OK)
+    {
+        s_dirty = false;
+        publish_change(s_change_mask, false);
+        s_change_mask = CONFIG_CHANGE_NONE;
+    }
+    else
+    {
+        s_config = previous;
+        s_dirty = previous_dirty;
+        s_change_mask = previous_change_mask;
+    }
+
+    xSemaphoreGive(s_lock);
+    return result;
+}
+
 /* ─── Diagnostics ─────────────────────────────────────────────────────── */
 
 uint16_t config_get_schema_version(void)

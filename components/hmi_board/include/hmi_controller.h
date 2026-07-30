@@ -7,6 +7,8 @@
 #define HMI_MAX_VISIBLE_ALARMS 8u
 #define HMI_ZONE_VALVE_COUNT 15u
 #define HMI_FIRMWARE_VERSION_LEN 32u
+#define HMI_ZONE_NAME_LEN 32u
+#define HMI_PROGRAM_NAME_LEN 32u
 
 typedef enum {
     HMI_SCREEN_DASHBOARD = 0,
@@ -25,7 +27,8 @@ typedef enum {
     HMI_ACTION_CLEAR_RAIN_DELAY,
     HMI_ACTION_ACKNOWLEDGE_ALARM,
     HMI_ACTION_CLEAR_ALARM,
-    HMI_ACTION_RELAY_SELF_TEST
+    HMI_ACTION_RELAY_SELF_TEST,
+    HMI_ACTION_REBOOT
 } hmi_action_type_t;
 
 typedef struct {
@@ -67,6 +70,8 @@ typedef struct {
     bool wifi_connected;
     int8_t wifi_rssi_dbm;
     char firmware_version[HMI_FIRMWARE_VERSION_LEN];
+    char active_zone_name[HMI_ZONE_NAME_LEN];
+    char active_program_name[HMI_PROGRAM_NAME_LEN];
     hmi_alarm_view_t alarms[HMI_MAX_VISIBLE_ALARMS];
     uint8_t alarm_count;
 } hmi_view_model_t;

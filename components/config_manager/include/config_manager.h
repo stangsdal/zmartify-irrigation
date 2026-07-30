@@ -161,6 +161,16 @@ cfg_result_t config_get_program(uint8_t program_index, config_program_t *out);
  */
 cfg_result_t config_set_program(uint8_t program_index, const config_program_t *in);
 
+/**
+ * @brief Replace the full controller program set and optionally update timezone.
+ *
+ * Programs beyond @p program_count are cleared. The change is committed atomically;
+ * if persistence fails, the previous runtime configuration is restored.
+ */
+cfg_result_t config_replace_programs(const config_program_t *programs,
+                                     uint8_t program_count,
+                                     const char *timezone);
+
 /* ─── Diagnostics ─────────────────────────────────────────────────────── */
 
 /**

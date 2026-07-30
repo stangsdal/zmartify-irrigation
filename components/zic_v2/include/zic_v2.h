@@ -68,15 +68,28 @@ typedef struct {
     const char *sd_card_last_error;
 } zic_v2_storage_t;
 
+typedef struct {
+    uint32_t config_revision;
+    uint32_t program_count;
+    uint32_t schedule_count;
+    bool rain_delay_active;
+    const char *active_program_name;
+    const char *next_run_at;
+    const char *blocked_reason;
+} zic_v2_scheduler_t;
+
 #define ZIC_V2_OMIT (-1000.0)
 #define ZIC_V2_COMMAND_ID_MAX 40u
 #define ZIC_V2_DEDUPE_CAPACITY 16u
 
 typedef enum {
     ZIC_V2_ACTION_ZONE_START = 0,
+    ZIC_V2_ACTION_PROGRAM_START,
     ZIC_V2_ACTION_ZONE_STOP,
     ZIC_V2_ACTION_STOP_ALL,
     ZIC_V2_ACTION_RAIN_DELAY,
+    ZIC_V2_ACTION_CONFIG_PROGRAMS_REPLACE,
+    ZIC_V2_ACTION_CONFIG_PROGRAMS_CLEAR,
     ZIC_V2_ACTION_CONFIG_NETWORK,
     ZIC_V2_ACTION_CONFIG_STORAGE_SD_CARD_INITIALIZE,
 } zic_v2_command_action_t;
@@ -95,6 +108,7 @@ typedef enum {
     ZIC_V2_REASON_STALE,
     ZIC_V2_REASON_FUTURE,
     ZIC_V2_REASON_INVALID_ZONE,
+    ZIC_V2_REASON_INVALID_PROGRAM,
     ZIC_V2_REASON_INVALID_RUNTIME,
     ZIC_V2_REASON_INVALID_RAIN_DELAY,
 } zic_v2_command_reason_t;
@@ -105,6 +119,7 @@ typedef struct {
     uint32_t source_epoch_s;
     zic_v2_command_action_t action;
     uint32_t zone_id;
+    uint32_t program_id;
     uint32_t runtime_seconds;
     uint32_t rain_delay_hours;
 } zic_v2_command_t;
@@ -138,6 +153,7 @@ bool zic_v2_build_reported_state(char *out,
                                  const zic_v2_hydraulics_t *hydraulics,
                                  const zic_v2_power_t *power,
                                  const zic_v2_weather_t *weather,
+                                 const zic_v2_scheduler_t *scheduler,
                                  const zic_v2_storage_t *storage);
 
 /**

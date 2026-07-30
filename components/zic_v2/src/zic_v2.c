@@ -8,6 +8,7 @@
 
 #define ZIC_V2_COMMAND_MAX_AGE_S 300u
 #define ZIC_V2_COMMAND_MAX_FUTURE_S 30u
+#define ZIC_V2_MAX_PROGRAMS 8u
 #define ZIC_V2_MAX_RUNTIME_S 7200u
 #define ZIC_V2_MAX_RAIN_DELAY_H 8760u
 
@@ -104,6 +105,9 @@ zic_v2_command_decision_t zic_v2_validate_command(
                 command->action == ZIC_V2_ACTION_ZONE_STOP) &&
                (command->zone_id == 0u || command->zone_id > 15u)) {
         reason = ZIC_V2_REASON_INVALID_ZONE;
+    } else if (command->action == ZIC_V2_ACTION_PROGRAM_START &&
+               (command->program_id == 0u || command->program_id > ZIC_V2_MAX_PROGRAMS)) {
+        reason = ZIC_V2_REASON_INVALID_PROGRAM;
     } else if (command->action == ZIC_V2_ACTION_ZONE_START &&
                (command->runtime_seconds == 0u || command->runtime_seconds > ZIC_V2_MAX_RUNTIME_S)) {
         reason = ZIC_V2_REASON_INVALID_RUNTIME;
@@ -150,6 +154,7 @@ const char *zic_v2_command_reason_name(zic_v2_command_reason_t reason)
     case ZIC_V2_REASON_STALE: return "stale_command";
     case ZIC_V2_REASON_FUTURE: return "future_command";
     case ZIC_V2_REASON_INVALID_ZONE: return "invalid_zone";
+    case ZIC_V2_REASON_INVALID_PROGRAM: return "invalid_program";
     case ZIC_V2_REASON_INVALID_RUNTIME: return "invalid_runtime";
     case ZIC_V2_REASON_INVALID_RAIN_DELAY: return "invalid_rain_delay";
     default: return "invalid_command";
@@ -172,6 +177,18 @@ static bool zic_v2_appendf(char *buf, size_t buf_len, size_t *pos, const char *f
     }
     *pos += (size_t)written;
     return true;
+}
+
+static bool zic_v2_append_json_string_or_null(char *buf,
+                                              size_t buf_len,
+                                              size_t *pos,
+                                              const char *key,
+                                              const char *value)
+{
+    if (value == NULL) {
+        return zic_v2_appendf(buf, buf_len, pos, "\"%s\":null", key);
+    }
+    return zic_v2_appendf(buf, buf_len, pos, "\"%s\":\"%s\"", key, value);
 }
 
 bool zic_v2_outcome_topic(const char *device_id, char *out, size_t out_len)
@@ -208,6 +225,7 @@ bool zic_v2_build_reported_state(char *out,
                                  const zic_v2_hydraulics_t *hydraulics,
                                  const zic_v2_power_t *power,
                                  const zic_v2_weather_t *weather,
+                                 const zic_v2_scheduler_t *scheduler,
                                  const zic_v2_storage_t *storage)
 {
     if (out == NULL || out_len == 0 || source_timestamp == NULL) {
@@ -280,31 +298,69 @@ bool zic_v2_build_reported_state(char *out,
         }
     }
 
-    if (weather != NULL) {
-        if (!zic_v2_appendf(out, out_len, &pos, ",\"irrigation\":{\"weather\":{")) {
+    if (weather != NULL || scheduler != NULL) {
+        bool irrigation_first = true;
+        if (!zic_v2_appendf(out, out_len, &pos, ",\"irrigation\":{")) {
             return false;
         }
-        bool first = true;
-        if (weather->temperature_c > ZIC_V2_OMIT &&
-            !zic_v2_appendf(out, out_len, &pos, "%s\"temperature_c\":%.1f", first ? "" : ",", weather->temperature_c)) {
-            return false;
+        if (weather != NULL) {
+            if (!zic_v2_appendf(out, out_len, &pos, "%s\"weather\":{",
+                                irrigation_first ? "" : ",")) {
+                return false;
+            }
+            bool first = true;
+            if (weather->temperature_c > ZIC_V2_OMIT &&
+                !zic_v2_appendf(out, out_len, &pos, "%s\"temperature_c\":%.1f", first ? "" : ",", weather->temperature_c)) {
+                return false;
+            }
+            first = first && weather->temperature_c <= ZIC_V2_OMIT;
+            if (weather->rain_mm >= 0.0 &&
+                !zic_v2_appendf(out, out_len, &pos, "%s\"rain_mm\":%.2f", first ? "" : ",", weather->rain_mm)) {
+                return false;
+            }
+            first = first && weather->rain_mm < 0.0;
+            if (weather->wind_mps >= 0.0 &&
+                !zic_v2_appendf(out, out_len, &pos, "%s\"wind_mps\":%.1f", first ? "" : ",", weather->wind_mps)) {
+                return false;
+            }
+            first = first && weather->wind_mps < 0.0;
+            if (weather->eto_mm >= 0.0 &&
+                !zic_v2_appendf(out, out_len, &pos, "%s\"eto_mm\":%.2f", first ? "" : ",", weather->eto_mm)) {
+                return false;
+            }
+            if (!zic_v2_appendf(out, out_len, &pos, "}")) {
+                return false;
+            }
+            irrigation_first = false;
         }
-        first = first && weather->temperature_c <= ZIC_V2_OMIT;
-        if (weather->rain_mm >= 0.0 &&
-            !zic_v2_appendf(out, out_len, &pos, "%s\"rain_mm\":%.2f", first ? "" : ",", weather->rain_mm)) {
-            return false;
+        if (scheduler != NULL) {
+            if (!zic_v2_appendf(out, out_len, &pos,
+                                "%s\"scheduler\":{\"config_revision\":%lu,\"program_count\":%lu,\"schedule_count\":%lu,",
+                                irrigation_first ? "" : ",",
+                                (unsigned long)scheduler->config_revision,
+                                (unsigned long)scheduler->program_count,
+                                (unsigned long)scheduler->schedule_count) ||
+                !zic_v2_append_json_string_or_null(out, out_len, &pos,
+                                                   "active_program_id", NULL) ||
+                !zic_v2_appendf(out, out_len, &pos, ",") ||
+                !zic_v2_append_json_string_or_null(out, out_len, &pos,
+                                                   "active_program_name",
+                                                   scheduler->active_program_name) ||
+                !zic_v2_appendf(out, out_len, &pos, ",") ||
+                !zic_v2_append_json_string_or_null(out, out_len, &pos,
+                                                   "next_run_at",
+                                                   scheduler->next_run_at) ||
+                !zic_v2_appendf(out, out_len, &pos,
+                                ",\"rain_delay_active\":%s,",
+                                scheduler->rain_delay_active ? "true" : "false") ||
+                !zic_v2_append_json_string_or_null(out, out_len, &pos,
+                                                   "blocked_reason",
+                                                   scheduler->blocked_reason) ||
+                !zic_v2_appendf(out, out_len, &pos, "}")) {
+                return false;
+            }
         }
-        first = first && weather->rain_mm < 0.0;
-        if (weather->wind_mps >= 0.0 &&
-            !zic_v2_appendf(out, out_len, &pos, "%s\"wind_mps\":%.1f", first ? "" : ",", weather->wind_mps)) {
-            return false;
-        }
-        first = first && weather->wind_mps < 0.0;
-        if (weather->eto_mm >= 0.0 &&
-            !zic_v2_appendf(out, out_len, &pos, "%s\"eto_mm\":%.2f", first ? "" : ",", weather->eto_mm)) {
-            return false;
-        }
-        if (!zic_v2_appendf(out, out_len, &pos, "}}")) {
+        if (!zic_v2_appendf(out, out_len, &pos, "}")) {
             return false;
         }
     }
