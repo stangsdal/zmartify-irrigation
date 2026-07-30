@@ -112,6 +112,7 @@ static zic_log_entry_t s_log_buffer[ZIC_LOG_PERSIST_CAPACITY];
 typedef enum {
     ZIC_CMD_START_ZONE = 0,
     ZIC_CMD_RUN_PROGRAM,
+    ZIC_CMD_SKIP_PROGRAM_STEP,
     ZIC_CMD_STOP_ZONE,
     ZIC_CMD_STOP_ALL,
     ZIC_CMD_SET_RAIN_DELAY,
@@ -163,6 +164,7 @@ typedef struct {
     uint8_t scheduled_next_zone_index;
     config_program_t scheduled_program;
     char scheduled_program_command_id[ZIC_V2_COMMAND_ID_MAX];
+    char active_zone_command_id[ZIC_V2_COMMAND_ID_MAX];
     uint32_t last_program_trigger_minute[CONFIG_MAX_PROGRAMS];
     flow_supervision_config_t flow_supervision;
     pressure_supervision_config_t pressure_supervision;
@@ -1942,6 +1944,7 @@ static void zic_runtime_reset_scheduler_state(zic_app_context_t *ctx)
     ctx->scheduled_next_zone_index = 0u;
     memset(&ctx->scheduled_program, 0, sizeof(ctx->scheduled_program));
     memset(ctx->scheduled_program_command_id, 0, sizeof(ctx->scheduled_program_command_id));
+    memset(ctx->active_zone_command_id, 0, sizeof(ctx->active_zone_command_id));
     memset(ctx->last_program_trigger_minute, 0, sizeof(ctx->last_program_trigger_minute));
 }
 
@@ -2161,6 +2164,10 @@ static void zic_mqtt_on_message(const char *topic,
             v2_command.program_id = value;
             cmd->type = ZIC_CMD_RUN_PROGRAM;
             cmd->program_id = (uint8_t)value;
+        } else if (strcmp(action, "program/skip") == 0) {
+            v2_command.action = ZIC_V2_ACTION_PROGRAM_SKIP;
+            schema_valid = schema_valid && zic_json_has_only(parameters, NULL, 0u);
+            cmd->type = ZIC_CMD_SKIP_PROGRAM_STEP;
         } else if (strcmp(action, "stop_all") == 0) {
             v2_command.action = ZIC_V2_ACTION_STOP_ALL;
             schema_valid = schema_valid && zic_json_has_only(parameters, NULL, 0u);
@@ -2552,6 +2559,12 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
         bool was_running = irrigation_engine_is_running(&ctx->engine);
         bool same_zone = was_running && ctx->engine.active_zone_id == cmd->zone_id;
         if (zic_runtime_start_zone(ctx, cmd->zone_id, cmd->runtime_seconds)) {
+            if (!same_zone) {
+                (void)snprintf(ctx->active_zone_command_id,
+                               sizeof(ctx->active_zone_command_id),
+                               "%s",
+                               cmd->command_id);
+            }
             const char *detail = same_zone ? "runtime_refreshed" : was_running ? "zone_transition" : NULL;
             zic_publish_v2_outcome(ctx, cmd->command_id, "run.started", "info", "completed", detail, cmd->zone_id);
         } else {
@@ -2590,6 +2603,24 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
                                "completed", NULL, 0);
         break;
     }
+    case ZIC_CMD_SKIP_PROGRAM_STEP:
+        if (!ctx->scheduled_program_active || irrigation_engine_is_idle(&ctx->engine)) {
+            zic_publish_v2_outcome(ctx, cmd->command_id, "run.rejected", "warning",
+                                   "rejected", "program_not_running", 0);
+            break;
+        }
+        if (!irrigation_engine_stop_zone(&ctx->engine, ctx->engine.active_zone_id)) {
+            zic_publish_v2_outcome(ctx, cmd->command_id, "run.rejected", "warning",
+                                   "rejected", "zone_not_active", 0);
+            break;
+        }
+        valve_diagnostics_command_close(&ctx->valve_diagnostics,
+                                        (uint64_t)(esp_timer_get_time() / 1000));
+        storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
+                               ZIC_LOG_IRRIGATION, "program zone skipped by command");
+        zic_publish_v2_outcome(ctx, cmd->command_id, "run.stopped", "info",
+                               "completed", "skip_next", 0);
+        break;
     case ZIC_CMD_STOP_ZONE:
         ctx->scheduled_program_active = false;
         if (irrigation_engine_stop_zone(&ctx->engine, cmd->zone_id)) {
@@ -2597,6 +2628,11 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
                                             (uint64_t)(esp_timer_get_time() / 1000));
             storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
                            ZIC_LOG_IRRIGATION, "zone stopped by command");
+            if (ctx->active_zone_command_id[0] != '\0') {
+                zic_publish_v2_outcome(ctx, ctx->active_zone_command_id, "run.completed", "info",
+                                       "completed", "stopped", cmd->zone_id);
+                ctx->active_zone_command_id[0] = '\0';
+            }
             zic_publish_v2_outcome(ctx, cmd->command_id, "run.stopped", "info", "completed", NULL, cmd->zone_id);
         } else {
             zic_publish_v2_outcome(ctx, cmd->command_id, "run.stop_rejected", "warning", "rejected",
@@ -2610,6 +2646,11 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
                                             (uint64_t)(esp_timer_get_time() / 1000));
         }
         irrigation_engine_stop_all(&ctx->engine);
+        if (ctx->active_zone_command_id[0] != '\0') {
+            zic_publish_v2_outcome(ctx, ctx->active_zone_command_id, "run.completed", "info",
+                                   "completed", "stop_all", 0);
+            ctx->active_zone_command_id[0] = '\0';
+        }
         storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
                        ZIC_LOG_AUDIT, "all irrigation stopped by command");
         zic_publish_v2_outcome(ctx, cmd->command_id, "run.stopped", "info", "completed", "stop_all", 0);
@@ -2925,6 +2966,11 @@ static void zic_control_task(void *arg)
             irrigation_engine_is_idle(&s_ctx.engine)) {
             storage_manager_append(&s_ctx.storage_manager, zic_log_timestamp(),
                                    ZIC_LOG_IRRIGATION, "zone completed");
+            if (!s_ctx.scheduled_program_active && s_ctx.active_zone_command_id[0] != '\0') {
+                zic_publish_v2_outcome(&s_ctx, s_ctx.active_zone_command_id,
+                                       "run.completed", "info", "completed", NULL, 0);
+                s_ctx.active_zone_command_id[0] = '\0';
+            }
         }
 
         flow_measurement_t flow = {0};
@@ -3163,9 +3209,18 @@ static void zic_telemetry_task(void *arg)
                 .schedule_count = s_ctx.scheduler_schedule_count,
                 .rain_delay_active = false,
                 .active_program_name = s_ctx.scheduled_program_active ? s_ctx.scheduled_program.name : NULL,
+                .active_zone_id = s_ctx.engine.active_zone_id,
+                .remaining_seconds = irrigation_engine_remaining_seconds(&s_ctx.engine, (uint64_t)(esp_timer_get_time() / 1000)),
+                .active_zone_name = NULL,
                 .next_run_at = NULL,
                 .blocked_reason = zic_scheduler_blocked_reason(&s_ctx),
             };
+            if (s_ctx.engine.active_zone_id > 0u) {
+                config_zone_t active_zone;
+                if (config_get_zone((uint8_t)(s_ctx.engine.active_zone_id - 1u), &active_zone) == CFG_OK) {
+                    scheduler.active_zone_name = active_zone.name[0] != '\0' ? active_zone.name : NULL;
+                }
+            }
             (void)persistent_store_get_u32("rain_delay_h", &rain_delay, 0u);
             scheduler.rain_delay_active = rain_delay > 0u;
             if (!s_ctx.scheduled_program_active && zic_scheduler_next_run_iso(next_run_at, sizeof(next_run_at))) {

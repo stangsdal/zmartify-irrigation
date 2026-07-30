@@ -11,6 +11,21 @@
 
 static const char *TAG = "mqtt_transport";
 
+static void mqtt_transport_reset_rx_buffer(mqtt_transport_t *transport)
+{
+    if (transport == NULL) {
+        return;
+    }
+
+    free(transport->rx_topic);
+    free(transport->rx_payload);
+    transport->rx_topic = NULL;
+    transport->rx_topic_len = 0u;
+    transport->rx_payload = NULL;
+    transport->rx_payload_len = 0u;
+    transport->rx_payload_capacity = 0u;
+}
+
 static void mqtt_transport_set_error(mqtt_transport_t *transport, const char *message)
 {
     if (transport == NULL) {
@@ -124,6 +139,7 @@ static void mqtt_event_handler(void *handler_args,
     case MQTT_EVENT_DISCONNECTED:
         transport->connected = false;
         ++transport->disconnect_count;
+        mqtt_transport_reset_rx_buffer(transport);
         if (transport->last_error[0] == '\0') {
             mqtt_transport_set_error(transport, "disconnected");
         }
@@ -136,11 +152,55 @@ static void mqtt_event_handler(void *handler_args,
     case MQTT_EVENT_DATA: {
         esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)event_data;
         if (transport->on_message != NULL && event != NULL) {
-            transport->on_message(event->topic,
-                                  (size_t)event->topic_len,
-                                  event->data,
-                                  (size_t)event->data_len,
-                                  transport->user_ctx);
+            size_t topic_len = (size_t)event->topic_len;
+            size_t data_len = (size_t)event->data_len;
+            size_t total_len = (size_t)event->total_data_len;
+            size_t offset = (size_t)event->current_data_offset;
+
+            if (total_len == 0u || (offset == 0u && total_len == data_len)) {
+                transport->on_message(event->topic,
+                                      topic_len,
+                                      event->data,
+                                      data_len,
+                                      transport->user_ctx);
+                break;
+            }
+
+            if (offset == 0u) {
+                mqtt_transport_reset_rx_buffer(transport);
+                transport->rx_topic = calloc(topic_len + 1u, sizeof(char));
+                transport->rx_payload = calloc(total_len + 1u, sizeof(char));
+                if (transport->rx_topic == NULL || transport->rx_payload == NULL) {
+                    ESP_LOGW(TAG, "MQTT fragment allocation failed (%u bytes)", (unsigned)total_len);
+                    mqtt_transport_reset_rx_buffer(transport);
+                    break;
+                }
+                memcpy(transport->rx_topic, event->topic, topic_len);
+                transport->rx_topic_len = topic_len;
+                transport->rx_payload_capacity = total_len;
+            }
+
+            if (transport->rx_topic == NULL || transport->rx_payload == NULL ||
+                offset + data_len > transport->rx_payload_capacity) {
+                ESP_LOGW(TAG, "MQTT fragment assembly failed (offset=%u len=%u total=%u)",
+                         (unsigned)offset, (unsigned)data_len, (unsigned)total_len);
+                mqtt_transport_reset_rx_buffer(transport);
+                break;
+            }
+
+            memcpy(transport->rx_payload + offset, event->data, data_len);
+            if (offset + data_len > transport->rx_payload_len) {
+                transport->rx_payload_len = offset + data_len;
+            }
+
+            if (transport->rx_payload_len >= transport->rx_payload_capacity) {
+                transport->on_message(transport->rx_topic,
+                                      transport->rx_topic_len,
+                                      transport->rx_payload,
+                                      transport->rx_payload_len,
+                                      transport->user_ctx);
+                mqtt_transport_reset_rx_buffer(transport);
+            }
         }
         break;
     }
@@ -181,6 +241,11 @@ bool mqtt_transport_init(mqtt_transport_t *transport, const mqtt_transport_confi
     transport->on_message = config->on_message;
     transport->on_connected = config->on_connected;
     transport->user_ctx = config->user_ctx;
+    transport->rx_topic = NULL;
+    transport->rx_topic_len = 0u;
+    transport->rx_payload = NULL;
+    transport->rx_payload_len = 0u;
+    transport->rx_payload_capacity = 0u;
     if (transport->client == NULL) {
         mqtt_transport_set_error(transport, "client init failed");
         return false;

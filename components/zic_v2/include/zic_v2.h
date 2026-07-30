@@ -74,6 +74,9 @@ typedef struct {
     uint32_t schedule_count;
     bool rain_delay_active;
     const char *active_program_name;
+    uint8_t active_zone_id;
+    uint32_t remaining_seconds;
+    const char *active_zone_name;
     const char *next_run_at;
     const char *blocked_reason;
 } zic_v2_scheduler_t;
@@ -85,6 +88,7 @@ typedef struct {
 typedef enum {
     ZIC_V2_ACTION_ZONE_START = 0,
     ZIC_V2_ACTION_PROGRAM_START,
+    ZIC_V2_ACTION_PROGRAM_SKIP,
     ZIC_V2_ACTION_ZONE_STOP,
     ZIC_V2_ACTION_STOP_ALL,
     ZIC_V2_ACTION_RAIN_DELAY,

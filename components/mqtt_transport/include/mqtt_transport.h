@@ -55,6 +55,11 @@ typedef struct {
     mqtt_transport_message_cb_t on_message;
     mqtt_transport_connected_cb_t on_connected;
     void *user_ctx;
+    char *rx_topic;
+    size_t rx_topic_len;
+    char *rx_payload;
+    size_t rx_payload_len;
+    size_t rx_payload_capacity;
 } mqtt_transport_t;
 
 bool mqtt_transport_init(mqtt_transport_t *transport, const mqtt_transport_config_t *config);
