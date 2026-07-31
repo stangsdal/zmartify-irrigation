@@ -3222,6 +3222,7 @@ static void zic_telemetry_task(void *arg)
                 .config_revision = s_ctx.scheduler_config_revision,
                 .program_count = s_ctx.scheduler_program_count,
                 .schedule_count = s_ctx.scheduler_schedule_count,
+                .max_zones = CONFIG_MAX_ZONES,
                 .rain_delay_active = false,
                 .active_program_name = s_ctx.scheduled_program_active ? s_ctx.scheduled_program.name : NULL,
                 .active_zone_id = s_ctx.engine.active_zone_id,

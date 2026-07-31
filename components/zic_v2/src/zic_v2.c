@@ -335,8 +335,9 @@ bool zic_v2_build_reported_state(char *out,
         }
         if (scheduler != NULL) {
             if (!zic_v2_appendf(out, out_len, &pos,
-                                "%s\"scheduler\":{\"config_revision\":%lu,\"program_count\":%lu,\"schedule_count\":%lu,",
+                                "%s\"capabilities\":{\"max_zones\":%u},\"scheduler\":{\"config_revision\":%lu,\"program_count\":%lu,\"schedule_count\":%lu,",
                                 irrigation_first ? "" : ",",
+                                (unsigned)scheduler->max_zones,
                                 (unsigned long)scheduler->config_revision,
                                 (unsigned long)scheduler->program_count,
                                 (unsigned long)scheduler->schedule_count) ||

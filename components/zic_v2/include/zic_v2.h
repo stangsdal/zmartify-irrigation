@@ -72,6 +72,7 @@ typedef struct {
     uint32_t config_revision;
     uint32_t program_count;
     uint32_t schedule_count;
+    uint8_t max_zones;
     bool rain_delay_active;
     const char *active_program_name;
     uint8_t active_zone_id;
