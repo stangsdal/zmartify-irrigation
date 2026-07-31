@@ -104,6 +104,7 @@ static zic_log_entry_t s_log_buffer[ZIC_LOG_PERSIST_CAPACITY];
 #define ZIC_HTTP_AUTH_FAILURE_LIMIT 5u
 #define ZIC_HTTP_AUTH_FAILURE_WINDOW_US (60LL * 1000LL * 1000LL)
 #define ZIC_OTA_UPLOAD_IDLE_TIMEOUT_US (30LL * 1000LL * 1000LL)
+#define ZIC_MQTT_STALE_RECOVERY_MS 30000u
 
 /* Device identity for Zmartify v2 topics; must match the edge registry
  * device_id assigned during onboarding (lowercase, hyphenated). */
@@ -208,6 +209,7 @@ static sdmmc_card_t *s_sd_card;
 static char s_sd_card_last_error[96] = "not initialized";
 static uint32_t s_http_auth_failures;
 static int64_t s_http_auth_window_start_us;
+static volatile uint32_t s_wifi_last_disconnect_reason;
 
 static void zic_publish_v2_outcome(zic_app_context_t *ctx,
                                    const char *correlation_id,
@@ -292,10 +294,17 @@ static bool zic_diagnostics_snapshot(void *context,
     policy_input->mqtt_connect_count = mqtt_status.connect_count;
     policy_input->mqtt_disconnect_count = mqtt_status.disconnect_count;
     policy_input->mqtt_error_count = mqtt_status.error_count;
+    policy_input->mqtt_recovery_count = mqtt_status.recovery_count;
     (void)snprintf(policy_input->mqtt_last_error,
                    sizeof(policy_input->mqtt_last_error),
                    "%s",
                    mqtt_status.last_error);
+    wifi_ap_record_t ap_info = {0};
+    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+        policy_input->wifi_connected = true;
+        policy_input->wifi_rssi_dbm = ap_info.rssi;
+    }
+    policy_input->wifi_last_disconnect_reason = s_wifi_last_disconnect_reason;
     policy_input->time_synchronized = hal_time_is_synced();
     policy_input->storage_ready = ctx->storage_ready;
     policy_input->storage_last_write_ok = ctx->storage_last_write_ok;
@@ -1215,6 +1224,7 @@ static void zic_wifi_event_handler(void *arg,
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         const wifi_event_sta_disconnected_t *event =
             (const wifi_event_sta_disconnected_t *)event_data;
+        s_wifi_last_disconnect_reason = event->reason;
         ESP_LOGW(TAG, "Wi-Fi disconnected (reason=%u); reconnecting", event->reason);
         (void)esp_wifi_connect();
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
@@ -1271,6 +1281,9 @@ static bool zic_wifi_init(void)
         esp_wifi_start() != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start Wi-Fi STA");
         return false;
+    }
+    if (esp_wifi_set_ps(WIFI_PS_NONE) != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to disable Wi-Fi power save");
     }
 
     ESP_LOGI(TAG, "Wi-Fi STA started for SSID '%s' as '%s'",
@@ -3158,6 +3171,8 @@ static void zic_telemetry_task(void *arg)
     xEventGroupWaitBits(s_runtime_events, ZIC_EVENT_ENGINE_READY, pdFALSE, pdTRUE, portMAX_DELAY);
 
     for (;;) {
+        (void)mqtt_transport_recover_if_stale(&s_ctx.mqtt_transport,
+                                               ZIC_MQTT_STALE_RECOVERY_MS);
         EventBits_t bits = xEventGroupGetBits(s_runtime_events);
         watersensor_link_state_t watersensor_state = WATERSENSOR_LINK_OFFLINE;
         if (xSemaphoreTake(s_watersensor_lock, pdMS_TO_TICKS(50)) == pdTRUE) {

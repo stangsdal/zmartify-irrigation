@@ -40,6 +40,7 @@ typedef struct {
     uint32_t connect_count;
     uint32_t disconnect_count;
     uint32_t error_count;
+    uint32_t recovery_count;
     char last_error[128];
 } mqtt_transport_status_t;
 
@@ -49,6 +50,8 @@ typedef struct {
     uint32_t connect_count;
     uint32_t disconnect_count;
     uint32_t error_count;
+    uint32_t recovery_count;
+    int64_t disconnected_since_us;
     char last_error[128];
     const char **subscribe_topics;
     size_t subscribe_topic_count;
@@ -70,4 +73,5 @@ bool mqtt_transport_publish(mqtt_transport_t *transport,
                             int qos,
                             bool retain);
 bool mqtt_transport_is_connected(const mqtt_transport_t *transport);
+bool mqtt_transport_recover_if_stale(mqtt_transport_t *transport, uint32_t max_disconnected_ms);
 void mqtt_transport_get_status(const mqtt_transport_t *transport, mqtt_transport_status_t *out);

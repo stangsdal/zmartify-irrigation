@@ -20,7 +20,11 @@ typedef struct {
     uint32_t mqtt_connect_count;
     uint32_t mqtt_disconnect_count;
     uint32_t mqtt_error_count;
+    uint32_t mqtt_recovery_count;
     char mqtt_last_error[128];
+    bool wifi_connected;
+    int8_t wifi_rssi_dbm;
+    uint32_t wifi_last_disconnect_reason;
     bool time_synchronized;
     uint8_t critical_alarms;
     uint8_t heap_utilisation_pct;

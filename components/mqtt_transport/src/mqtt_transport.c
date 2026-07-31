@@ -7,6 +7,7 @@
 
 #include "esp_crt_bundle.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "mqtt_client.h"
 
 static const char *TAG = "mqtt_transport";
@@ -123,8 +124,8 @@ static void mqtt_event_handler(void *handler_args,
     switch ((esp_mqtt_event_id_t)event_id) {
     case MQTT_EVENT_CONNECTED:
         transport->connected = true;
+        transport->disconnected_since_us = 0;
         ++transport->connect_count;
-        mqtt_transport_set_error(transport, NULL);
         ESP_LOGI(TAG, "MQTT connected");
         for (size_t i = 0; i < transport->subscribe_topic_count; ++i) {
             if (transport->subscribe_topics[i] != NULL) {
@@ -138,6 +139,9 @@ static void mqtt_event_handler(void *handler_args,
         break;
     case MQTT_EVENT_DISCONNECTED:
         transport->connected = false;
+        if (transport->disconnected_since_us == 0) {
+            transport->disconnected_since_us = esp_timer_get_time();
+        }
         ++transport->disconnect_count;
         mqtt_transport_reset_rx_buffer(transport);
         if (transport->last_error[0] == '\0') {
@@ -235,6 +239,8 @@ bool mqtt_transport_init(mqtt_transport_t *transport, const mqtt_transport_confi
     transport->connect_count = 0;
     transport->disconnect_count = 0;
     transport->error_count = 0;
+    transport->recovery_count = 0;
+    transport->disconnected_since_us = 0;
     transport->last_error[0] = '\0';
     transport->subscribe_topics = config->subscribe_topics;
     transport->subscribe_topic_count = config->subscribe_topic_count;
@@ -291,6 +297,35 @@ bool mqtt_transport_is_connected(const mqtt_transport_t *transport)
     return transport->connected;
 }
 
+bool mqtt_transport_recover_if_stale(mqtt_transport_t *transport, uint32_t max_disconnected_ms)
+{
+    if (transport == NULL || transport->client == NULL || transport->connected ||
+        transport->disconnected_since_us == 0 || max_disconnected_ms == 0) {
+        return false;
+    }
+
+    int64_t now_us = esp_timer_get_time();
+    int64_t max_disconnected_us = (int64_t)max_disconnected_ms * 1000LL;
+    if (now_us - transport->disconnected_since_us < max_disconnected_us) {
+        return false;
+    }
+
+    ESP_LOGW(TAG, "MQTT disconnected for %u ms; restarting client", (unsigned)max_disconnected_ms);
+    mqtt_transport_reset_rx_buffer(transport);
+    esp_err_t stop_err = esp_mqtt_client_stop(transport->client);
+    esp_err_t start_err = esp_mqtt_client_start(transport->client);
+    transport->disconnected_since_us = now_us;
+    ++transport->recovery_count;
+    if (stop_err != ESP_OK || start_err != ESP_OK) {
+        char message[128];
+        (void)snprintf(message, sizeof(message), "mqtt recovery failed (stop=%s,start=%s)",
+                       esp_err_to_name(stop_err), esp_err_to_name(start_err));
+        mqtt_transport_set_error(transport, message);
+        return false;
+    }
+    return true;
+}
+
 void mqtt_transport_get_status(const mqtt_transport_t *transport, mqtt_transport_status_t *out)
 {
     if (out == NULL) {
@@ -304,5 +339,6 @@ void mqtt_transport_get_status(const mqtt_transport_t *transport, mqtt_transport
     out->connect_count = transport->connect_count;
     out->disconnect_count = transport->disconnect_count;
     out->error_count = transport->error_count;
+    out->recovery_count = transport->recovery_count;
     (void)snprintf(out->last_error, sizeof(out->last_error), "%s", transport->last_error);
 }

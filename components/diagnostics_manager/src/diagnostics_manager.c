@@ -182,7 +182,11 @@ bool diagnostics_get_health(diag_health_t *out)
     out->mqtt_connect_count = policy_input.mqtt_connect_count;
     out->mqtt_disconnect_count = policy_input.mqtt_disconnect_count;
     out->mqtt_error_count = policy_input.mqtt_error_count;
+    out->mqtt_recovery_count = policy_input.mqtt_recovery_count;
     (void)snprintf(out->mqtt_last_error, sizeof(out->mqtt_last_error), "%s", policy_input.mqtt_last_error);
+    out->wifi_connected = policy_input.wifi_connected;
+    out->wifi_rssi_dbm = policy_input.wifi_rssi_dbm;
+    out->wifi_last_disconnect_reason = policy_input.wifi_last_disconnect_reason;
     out->time_synchronized = policy_input.time_synchronized;
     out->storage_ready = policy_input.storage_ready;
     out->storage_last_write_ok = policy_input.storage_last_write_ok;
@@ -232,8 +236,9 @@ size_t diagnostics_health_to_json(char *buf, size_t len)
              "\"storage\":\"%s\","
              "\"flow_available\":%s,"
              "\"pressure_available\":%s,"
+             "\"wifi\":{\"connected\":%s,\"rssi_dbm\":%d,\"last_disconnect_reason\":%lu},"
              "\"mqtt_connected\":%s,"
-            "\"mqtt\":{\"connected\":%s,\"connect_count\":%lu,\"disconnect_count\":%lu,\"error_count\":%lu,\"last_error\":\"%s\"},"
+            "\"mqtt\":{\"connected\":%s,\"connect_count\":%lu,\"disconnect_count\":%lu,\"error_count\":%lu,\"recovery_count\":%lu,\"last_error\":\"%s\"},"
              "\"time_synchronized\":%s,"
              "\"control_stack_free\":%lu,"
              "\"telemetry_stack_free\":%lu,"
@@ -258,11 +263,15 @@ size_t diagnostics_health_to_json(char *buf, size_t len)
                  diagnostics_status_name(h.status.storage),
                  h.flow_sensor_available ? "true" : "false",
                  h.pressure_sensor_available ? "true" : "false",
+                 h.wifi_connected ? "true" : "false",
+                 (int)h.wifi_rssi_dbm,
+                 (unsigned long)h.wifi_last_disconnect_reason,
                  h.mqtt_connected ? "true" : "false",
                  h.mqtt_connected ? "true" : "false",
                  (unsigned long)h.mqtt_connect_count,
                  (unsigned long)h.mqtt_disconnect_count,
                  (unsigned long)h.mqtt_error_count,
+                 (unsigned long)h.mqtt_recovery_count,
                  h.mqtt_last_error,
                  h.time_synchronized ? "true" : "false",
                  (unsigned long)h.control_stack_free_bytes,
