@@ -113,6 +113,7 @@ cfg_result_t config_set_system(const config_system_t *in);
 
 cfg_result_t config_get_network(config_network_t *out);
 cfg_result_t config_set_network(const config_network_t *in);
+cfg_result_t config_manager_commit_network_recovery(void);
 
 /* ─── Hydraulics ──────────────────────────────────────────────────────── */
 

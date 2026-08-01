@@ -79,6 +79,7 @@ typedef struct {
     uint32_t remaining_seconds;
     const char *active_zone_name;
     const char *next_run_at;
+    const char *next_program_name;
     const char *blocked_reason;
 } zic_v2_scheduler_t;
 

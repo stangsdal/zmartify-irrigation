@@ -73,7 +73,7 @@ static void apply_factory_defaults(zic_config_t *cfg)
     cfg->system.controller_id          = 0x00000001;
     cfg->system.operational_mode       = CONFIG_MODE_AUTO;
     cfg->system.active_zone_count      = CONFIG_MAX_ZONES;
-    cfg->system.max_simultaneous_zones = 1;
+    cfg->system.max_simultaneous_zones = 2;
     cfg->system.global_max_runtime_s   = 3600;  /* 1 hour */
     cfg->system.master_valve_enabled   = true;
 
@@ -141,6 +141,7 @@ static void apply_factory_defaults(zic_config_t *cfg)
     for (int i = 0; i < CONFIG_MAX_ZONES; i++)
     {
         cfg->programs[0].zone_runtime_min[i] = 10;  /* 10 minutes per zone */
+        cfg->programs[0].zone_group[i] = (uint8_t)(i + 1);
     }
 }
 
@@ -778,6 +779,34 @@ cfg_result_t config_replace_programs(const config_program_t *programs,
         s_change_mask = previous_change_mask;
     }
 
+    xSemaphoreGive(s_lock);
+    return result;
+}
+
+cfg_result_t config_manager_commit_network_recovery(void)
+{
+    if (!s_initialized) {
+        return CFG_NOT_INITIALIZED;
+    }
+    if (!s_safe_mode) {
+        return config_manager_commit();
+    }
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (!config_validate_safety(&s_config)) {
+        xSemaphoreGive(s_lock);
+        return CFG_VALIDATION_ERROR;
+    }
+
+    cfg_result_t result = save_to_nvs();
+    if (result == CFG_OK) {
+        s_safe_mode = false;
+        s_recovery_present = false;
+        (void)hal_storage_erase_key(CFG_SAFE_MODE_NVS_KEY);
+        (void)hal_storage_erase_key(CFG_RECOVERY_NVS_KEY);
+        (void)hal_storage_erase_key(CFG_RECOVERY_MARKER_NVS_KEY);
+        publish_change(CONFIG_CHANGE_NETWORK, false);
+    }
     xSemaphoreGive(s_lock);
     return result;
 }

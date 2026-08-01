@@ -180,7 +180,22 @@ bool config_migrate_v3(zic_config_t *config)
     for (uint8_t index = 0; index < CONFIG_MAX_ZONES; ++index) {
         config->zones[index].enabled = true;
     }
-    config->schema_version = CONFIG_SCHEMA_VERSION;
+    config->schema_version = 4u;
+    return true;
+}
+
+bool config_migrate_v4(zic_config_t *config)
+{
+    if (config == NULL || config->schema_version != 4u) {
+        return false;
+    }
+    for (uint8_t index = 0; index < CONFIG_MAX_PROGRAMS; ++index) {
+        for (uint8_t zone = 0; zone < CONFIG_MAX_ZONES; ++zone) {
+            config->programs[index].zone_group[zone] = (uint8_t)(zone + 1u);
+        }
+    }
+    config->system.max_simultaneous_zones = 2u;
+    config->schema_version = 5u;
     return true;
 }
 
@@ -208,6 +223,9 @@ bool config_migrate_to_current(zic_config_t *config)
             break;
         case 3u:
             migrated = config_migrate_v3(candidate);
+            break;
+        case 4u:
+            migrated = config_migrate_v4(candidate);
             break;
         default:
             ok = false;

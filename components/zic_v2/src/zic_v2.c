@@ -348,6 +348,10 @@ bool zic_v2_build_reported_state(char *out,
                                                    "active_program_name",
                                                    scheduler->active_program_name) ||
                 !zic_v2_appendf(out, out_len, &pos, ",") ||
+                !zic_v2_append_json_string_or_null(out, out_len, &pos,
+                                                   "next_program_name",
+                                                   scheduler->next_program_name) ||
+                !zic_v2_appendf(out, out_len, &pos, ",") ||
                 !zic_v2_appendf(out, out_len, &pos,
                                 "\"active_zone_id\":%u,\"remaining_seconds\":%lu,",
                                 (unsigned)scheduler->active_zone_id,

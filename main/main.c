@@ -735,9 +735,21 @@ static esp_err_t zic_health_http_handler(httpd_req_t *request)
     char payload[768];
     size_t length = diagnostics_health_to_json(payload, sizeof(payload));
     if (length == 0u) {
-        httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "Diagnostics unavailable");
-        return ESP_FAIL;
+        const esp_app_desc_t *app_desc = esp_app_get_description();
+        int written = snprintf(
+            payload,
+            sizeof(payload),
+            "{\"firmware_version\":\"%s\",\"runtime\":\"healthy\","
+            "\"communications\":\"%s\",\"mqtt_connected\":%s,\"time_synchronized\":%s,"
+            "\"hydraulics\":\"unavailable\"}",
+            app_desc != NULL ? app_desc->version : "unknown",
+            mqtt_transport_is_connected(&s_ctx.mqtt_transport) ? "healthy" : "unavailable",
+            mqtt_transport_is_connected(&s_ctx.mqtt_transport) ? "true" : "false",
+            hal_time_is_synced() ? "true" : "false");
+        if (written < 0 || (size_t)written >= sizeof(payload)) {
+            return ESP_FAIL;
+        }
+        length = (size_t)written;
     }
     httpd_resp_set_type(request, "application/json");
     return httpd_resp_send(request, payload, length);
@@ -1001,7 +1013,8 @@ static esp_err_t zic_network_config_http_handler(httpd_req_t *request)
         httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Config value too long");
         return ESP_FAIL;
     }
-    if (config_set_network(&network) != CFG_OK || config_manager_commit() != CFG_OK) {
+    if (config_set_network(&network) != CFG_OK ||
+        config_manager_commit_network_recovery() != CFG_OK) {
         httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Config save failed");
         return ESP_FAIL;
     }
@@ -1812,8 +1825,7 @@ static bool zic_parse_v2_programs_replace(const cJSON *parameters,
         }
 
         bool zone_seen[CONFIG_MAX_ZONES] = {false};
-        bool sort_seen[CONFIG_MAX_ZONES] = {false};
-        uint8_t sorted_zone_indices[CONFIG_MAX_ZONES] = {0};
+        uint8_t group_counts[CONFIG_MAX_ZONES] = {0};
         for (int zone_item_index = 0; zone_item_index < cJSON_GetArraySize(zones); ++zone_item_index) {
             const cJSON *zone_json = cJSON_GetArrayItem(zones, zone_item_index);
             char zone_ref[16];
@@ -1837,35 +1849,19 @@ static bool zic_parse_v2_programs_replace(const cJSON *parameters,
                 }
                 return false;
             }
-            if (zone_seen[zone_index] || sort_seen[sort_order - 1u]) {
+            if (zone_seen[zone_index] || ++group_counts[sort_order - 1u] > 2u) {
                 if (detail_out != NULL) {
                     *detail_out = "duplicate_zone_entry";
                 }
                 return false;
             }
             zone_seen[zone_index] = true;
-            sort_seen[sort_order - 1u] = true;
-            sorted_zone_indices[sort_order - 1u] = zone_index;
             program->zone_runtime_min[zone_index] = zone_enabled
                 ? (uint8_t)(duration_seconds / 60u)
                 : 0u;
+            program->zone_group[zone_index] = (uint8_t)sort_order;
         }
 
-        bool have_sorted_zone = false;
-        uint8_t previous_zone_index = 0u;
-        for (size_t sort_index = 0; sort_index < CONFIG_MAX_ZONES; ++sort_index) {
-            if (!sort_seen[sort_index]) {
-                continue;
-            }
-            if (have_sorted_zone && sorted_zone_indices[sort_index] <= previous_zone_index) {
-                if (detail_out != NULL) {
-                    *detail_out = "unsupported_zone_order";
-                }
-                return false;
-            }
-            previous_zone_index = sorted_zone_indices[sort_index];
-            have_sorted_zone = true;
-        }
 
         schedule_count = cJSON_GetArraySize(schedules);
         if (schedule_count < 0 || schedule_count > CONFIG_MAX_START_TIMES) {
@@ -1989,7 +1985,8 @@ static void zic_scheduler_store_metadata(zic_app_context_t *ctx,
     (void)persistent_store_set_u32("sched_sched_ct", schedule_count);
 }
 
-static bool zic_scheduler_next_run_iso(char *out, size_t out_len)
+static bool zic_scheduler_next_run_iso(char *out, size_t out_len,
+                                       char *program_name, size_t program_name_len)
 {
     time_t now;
     time_t best = 0;
@@ -2028,6 +2025,9 @@ static bool zic_scheduler_next_run_iso(char *out, size_t out_len)
                 if (!found || candidate < best) {
                     best = candidate;
                     found = true;
+                    if (program_name != NULL && program_name_len > 0u) {
+                        snprintf(program_name, program_name_len, "%s", program.name);
+                    }
                 }
             }
         }
@@ -2493,6 +2493,7 @@ static bool zic_runtime_start_zone(zic_app_context_t *ctx,
     }
     storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
                            ZIC_LOG_IRRIGATION, "zone started");
+    zic_publish_v2_outcome(ctx, NULL, "zone.started", "info", "completed", NULL, zone_id);
     return true;
 }
 
@@ -2896,11 +2897,38 @@ static void zic_scheduler_advance_program(zic_app_context_t *ctx)
     }
 
     while (ctx->scheduled_next_zone_index < CONFIG_MAX_ZONES) {
-        uint8_t zone_index = ctx->scheduled_next_zone_index++;
-        config_zone_t zone;
-        if (config_get_zone(zone_index, &zone) != CFG_OK || !zone.enabled) {
-            continue;
+        uint8_t next_group = 0u;
+        for (uint8_t zone_index = 0; zone_index < CONFIG_MAX_ZONES; ++zone_index) {
+            uint8_t group = ctx->scheduled_program.zone_group[zone_index];
+            if (group == 0u) {
+                group = (uint8_t)(zone_index + 1u);
+            }
+            if (ctx->scheduled_program.zone_runtime_min[zone_index] != 0u &&
+                group > ctx->scheduled_next_zone_index &&
+                (next_group == 0u || group < next_group)) {
+                next_group = group;
+            }
         }
+        if (next_group == 0u) {
+            break;
+        }
+        ctx->scheduled_next_zone_index = next_group;
+
+        uint8_t started_count = 0u;
+        bool group_failed = false;
+        for (uint8_t zone_index = 0; zone_index < CONFIG_MAX_ZONES; ++zone_index) {
+            uint8_t group = ctx->scheduled_program.zone_group[zone_index];
+            if (group == 0u) {
+                group = (uint8_t)(zone_index + 1u);
+            }
+            if (group != next_group) {
+                continue;
+            }
+
+            config_zone_t zone;
+            if (config_get_zone(zone_index, &zone) != CFG_OK || !zone.enabled) {
+                continue;
+            }
         uint32_t base_runtime_seconds =
             (uint32_t)ctx->scheduled_program.zone_runtime_min[zone_index] * 60u;
         uint16_t seasonal_percent =
@@ -2922,10 +2950,28 @@ static void zic_scheduler_advance_program(zic_app_context_t *ctx)
             storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
                                    ZIC_LOG_WEATHER, "zone skipped by weather adjustment");
         }
-        if (runtime_seconds != 0 && zic_runtime_start_zone(ctx, zone_index + 1, runtime_seconds)) {
-            ESP_LOGI(TAG, "Program %u running zone %u for %lu seconds",
-                     ctx->scheduled_program_index + 1, zone_index + 1,
+            if (runtime_seconds == 0u) {
+                continue;
+            }
+            if (started_count >= IRRIGATION_MAX_CONCURRENT_ZONES ||
+                !zic_runtime_start_zone(ctx, zone_index + 1u, runtime_seconds)) {
+                group_failed = true;
+                break;
+            }
+            ++started_count;
+            ESP_LOGI(TAG, "Program %u running group %u zone %u for %lu seconds",
+                     ctx->scheduled_program_index + 1u, next_group, zone_index + 1u,
                      (unsigned long)runtime_seconds);
+        }
+
+        if (group_failed) {
+            (void)irrigation_engine_stop_all(&ctx->engine);
+            ctx->scheduled_program_active = false;
+            storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
+                                   ZIC_LOG_IRRIGATION, "scheduled program group failed");
+            return;
+        }
+        if (started_count > 0u) {
             return;
         }
     }
@@ -2965,6 +3011,11 @@ static void zic_control_task(void *arg)
         xSemaphoreTake(s_ctx_lock, portMAX_DELAY);
 
         irrigation_phase_t previous_phase = s_ctx.engine.phase;
+        uint8_t active_zone_ids[IRRIGATION_MAX_CONCURRENT_ZONES] = {0};
+        uint8_t active_zone_count = s_ctx.engine.active_zone_count;
+        for (uint8_t index = 0; index < active_zone_count; ++index) {
+            active_zone_ids[index] = s_ctx.engine.active_zones[index].zone_id;
+        }
         uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
         (void)irrigation_engine_tick(&s_ctx.engine, now_ms);
         if (previous_phase != IRRIGATION_PHASE_RUNNING &&
@@ -2975,10 +3026,23 @@ static void zic_control_task(void *arg)
                    s_ctx.engine.phase != IRRIGATION_PHASE_RUNNING) {
             valve_diagnostics_command_close(&s_ctx.valve_diagnostics, now_ms);
         }
+        for (uint8_t index = 0; index < active_zone_count; ++index) {
+            bool still_active = false;
+            for (uint8_t current = 0; current < s_ctx.engine.active_zone_count; ++current) {
+                if (active_zone_ids[index] == s_ctx.engine.active_zones[current].zone_id) {
+                    still_active = true;
+                    break;
+                }
+            }
+            if (!still_active && active_zone_ids[index] != 0u) {
+                storage_manager_append(&s_ctx.storage_manager, zic_log_timestamp(),
+                                       ZIC_LOG_IRRIGATION, "zone completed");
+                zic_publish_v2_outcome(&s_ctx, NULL, "zone.stopped", "info", "completed", NULL,
+                                       active_zone_ids[index]);
+            }
+        }
         if (previous_phase == IRRIGATION_PHASE_MASTER_CLOSE_DELAY &&
             irrigation_engine_is_idle(&s_ctx.engine)) {
-            storage_manager_append(&s_ctx.storage_manager, zic_log_timestamp(),
-                                   ZIC_LOG_IRRIGATION, "zone completed");
             if (!s_ctx.scheduled_program_active && s_ctx.active_zone_command_id[0] != '\0') {
                 zic_publish_v2_outcome(&s_ctx, s_ctx.active_zone_command_id,
                                        "run.completed", "info", "completed", NULL, 0);
@@ -3204,6 +3268,7 @@ static void zic_telemetry_task(void *arg)
             /* Zmartify v2 reported-state (schema mqtt-v2/reported-state). */
             char stamp[32];
             char next_run_at[32] = {0};
+            char next_program_name[CONFIG_PROGRAM_NAME_LEN] = {0};
             zic_v2_now_iso(stamp, sizeof(stamp));
             zic_v2_hydraulics_t hyd = {
                 .flow_lpm = (double)s_ctx.flow_manager.current_lpm_x100 / 100.0,
@@ -3229,6 +3294,7 @@ static void zic_telemetry_task(void *arg)
                 .remaining_seconds = irrigation_engine_remaining_seconds(&s_ctx.engine, (uint64_t)(esp_timer_get_time() / 1000)),
                 .active_zone_name = NULL,
                 .next_run_at = NULL,
+                .next_program_name = NULL,
                 .blocked_reason = zic_scheduler_blocked_reason(&s_ctx),
             };
             if (s_ctx.engine.active_zone_id > 0u) {
@@ -3239,8 +3305,10 @@ static void zic_telemetry_task(void *arg)
             }
             (void)persistent_store_get_u32("rain_delay_h", &rain_delay, 0u);
             scheduler.rain_delay_active = rain_delay > 0u;
-            if (!s_ctx.scheduled_program_active && zic_scheduler_next_run_iso(next_run_at, sizeof(next_run_at))) {
+            if (!s_ctx.scheduled_program_active && zic_scheduler_next_run_iso(
+                    next_run_at, sizeof(next_run_at), next_program_name, sizeof(next_program_name))) {
                 scheduler.next_run_at = next_run_at;
+                scheduler.next_program_name = next_program_name;
             }
             zic_sd_card_storage_snapshot(&storage);
             const esp_app_desc_t *app_desc = esp_app_get_description();

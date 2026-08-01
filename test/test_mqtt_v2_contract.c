@@ -146,6 +146,7 @@ static void test_reported_state_includes_scheduler(void)
               .rain_delay_active = false,
               .active_program_name = "Test",
               .next_run_at = "2026-07-30T13:50:00Z",
+              .next_program_name = "Morning Cycle",
               .blocked_reason = NULL,
        };
 
@@ -163,6 +164,7 @@ static void test_reported_state_includes_scheduler(void)
        assert(strstr(payload, "\"schedule_count\":2") != NULL);
        assert(strstr(payload, "\"active_program_name\":\"Test\"") != NULL);
        assert(strstr(payload, "\"next_run_at\":\"2026-07-30T13:50:00Z\"") != NULL);
+       assert(strstr(payload, "\"next_program_name\":\"Morning Cycle\"") != NULL);
 }
 
 int main(void)

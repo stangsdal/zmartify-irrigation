@@ -21,7 +21,7 @@
 
 /* ─── Schema & limits ────────────────────────────────────────────────── */
 
-#define CONFIG_SCHEMA_VERSION    4       /**< Increment on incompatible changes */
+#define CONFIG_SCHEMA_VERSION    5       /**< Increment on incompatible changes */
 #define CONFIG_MAGIC             0x5A49  /**< 'ZI' – used as header sanity check */
 
 #define CONFIG_MAX_ZONES         15      /**< Relays 1-15 are irrigation zones */
@@ -149,6 +149,7 @@ typedef struct
     config_days_t         run_days;                           /**< Bitmask of active days */
     config_start_time_t   start_times[CONFIG_MAX_START_TIMES];
     uint8_t               zone_runtime_min[CONFIG_MAX_ZONES]; /**< Minutes per zone (0=skip) */
+    uint8_t               zone_group[CONFIG_MAX_ZONES];       /**< Shared group starts zones together */
     bool                  weather_skip_enabled;               /**< Skip on rain forecast */
     uint8_t               rain_skip_threshold_pct;            /**< Rain probability % */
     uint8_t               seasonal_adjust_pct;               /**< Global seasonal factor */

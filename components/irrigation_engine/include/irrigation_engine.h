@@ -14,6 +14,15 @@ typedef enum {
     IRRIGATION_PHASE_FAULT,
 } irrigation_phase_t;
 
+#define IRRIGATION_MAX_CONCURRENT_ZONES 2u
+
+typedef struct {
+    uint64_t deadline_ms;
+    uint32_t requested_runtime_seconds;
+    uint8_t zone_id;
+    uint8_t relay_index;
+} irrigation_active_zone_t;
+
 typedef struct {
     zic_controller_t controller;
     zone_manager_t zone_manager;
@@ -22,6 +31,8 @@ typedef struct {
     uint32_t requested_runtime_seconds;
     uint8_t active_zone_id;
     uint8_t active_relay_index;
+    irrigation_active_zone_t active_zones[IRRIGATION_MAX_CONCURRENT_ZONES];
+    uint8_t active_zone_count;
 } irrigation_engine_t;
 
 void irrigation_engine_init(irrigation_engine_t *engine);
