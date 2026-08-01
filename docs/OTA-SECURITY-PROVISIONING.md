@@ -37,6 +37,19 @@ The deployable file is `build/zmartify_irrigation.bin`. The
 script verifies the signature with `OTA_VERIFY_KEY` before sending any bytes. The upload request
 also requires the HTTP administrator bearer token described in [HTTP-AUTH.md](HTTP-AUTH.md).
 
+## Network Recovery
+
+An interrupted or incompatible configuration upgrade can put the controller in
+configuration safe mode. Irrigation remains disabled and ordinary configuration
+commits are rejected. An authenticated `POST /config/network` with a complete,
+validated network object is the recovery path: it saves the network settings,
+clears safe mode, and requires a reboot before MQTT reconnects.
+
+Do not put credentials on a command line or in shell history. Obtain the
+per-device MQTT credential through the edge registry, keep it in a shell
+variable, submit it over the authenticated local HTTPS/HTTP management path,
+then reboot and verify `/health` reports `mqtt_connected: true`.
+
 ## Rollback Provisioning
 
 Application rollback is a bootloader capability. A controller whose existing bootloader was

@@ -2,9 +2,9 @@
 
 ## Status
 
-Draft for controller implementation alignment.
-
-This document defines the missing controller-side synchronization contract needed so edge-authored irrigation programs and schedules can be applied to controller-local autonomous scheduling.
+Implemented by the controller and edge. This document is the contract for
+edge-authored irrigation programs and schedules applied to controller-local
+autonomous scheduling.
 
 ## Goals
 
@@ -150,6 +150,12 @@ This is optional. The full-snapshot `replace` command is the preferred first imp
 }
 ```
 
+`sort_order` is a run group, not a unique sequence position. All enabled zones
+with the same positive group value start together. The controller currently
+accepts at most two enabled zones per group; it rejects a payload that exceeds
+that limit. Groups execute in ascending numeric order, and a later group waits
+until the irrigation engine is idle.
+
 ## Controller apply rules
 
 1. Validate the entire payload before mutating persistent configuration.
@@ -206,7 +212,7 @@ The controller should emit outcomes on the existing irrigation outcome topic.
 
 ## Reported-state additions
 
-The reported-state payload should eventually include a scheduler block, for example:
+The reported-state payload includes a scheduler block, for example:
 
 ```json
 {
@@ -216,6 +222,7 @@ The reported-state payload should eventually include a scheduler block, for exam
       "active_program_id": null,
       "active_program_name": null,
       "next_run_at": "2026-07-30T13:50:00Z",
+      "next_program_name": "Test",
       "rain_delay_active": false,
       "blocked_reason": null
     }
@@ -227,8 +234,14 @@ This lets edge verify that the controller has actually applied the synchronized 
 
 Current implementation note:
 
-- The controller now emits a scheduler block with `config_revision`, `program_count`, `schedule_count`, `active_program_name`, `next_run_at`, `rain_delay_active`, and `blocked_reason`.
+- The controller emits `config_revision`, `program_count`, `schedule_count`, `active_program_name`, `next_run_at`, `next_program_name`, `rain_delay_active`, and `blocked_reason`.
 - `active_program_id` remains `null` because edge IDs are not yet persisted in the controller configuration model.
+
+## Runtime outcomes
+
+The controller publishes `zone.started` when a zone is accepted for execution
+and `zone.stopped` when that individual zone completes. For concurrent groups,
+each zone has an independent runtime and produces its own stop outcome.
 
 ## Precedence rules
 
@@ -249,7 +262,10 @@ The controller implementation must document and test these rules:
 4. Confirm next-run calculation respects local timezone.
 5. Confirm a scheduled run starts while edge is disconnected.
 6. Confirm manual run suppresses or defers overlapping scheduled execution according to precedence rules.
-7. Confirm reported-state exposes synchronized scheduler revision and next-run state.
+7. Confirm reported-state exposes synchronized scheduler revision, next-run,
+  and next-program state.
+8. Confirm two zones in the same group run together and each produces a
+  lifecycle outcome.
 
 ## Recommended implementation order
 

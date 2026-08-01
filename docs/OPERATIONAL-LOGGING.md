@@ -13,6 +13,10 @@ Storage HAL's 4096-byte blob limit.
 - Missing or corrupt snapshots are ignored and replaced by a new log without blocking controller startup.
 - High-frequency telemetry and control-loop heartbeats are not written to NVS.
 - Events recorded before SNTP synchronization use timestamp `0`; subsequent events use Unix time.
+- Zone lifecycle is recorded independently: each started or completed zone gets
+	an irrigation event, including both zones in a concurrent run group.
+- MQTT v2 publishes matching `zone.started` and `zone.stopped` outcomes when a
+	broker connection is available; the edge ingests them into its event history.
 
 ## Export
 

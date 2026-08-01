@@ -4,7 +4,11 @@ ESP32-S3 based irrigation controller firmware built with ESP-IDF.
 
 ## Current Status
 
-This repository is being implemented incrementally from the v3.0 documentation package.
+The controller runs autonomous persisted schedules, synchronizes program
+configuration from the edge over MQTT v2, and reports runtime state and
+outcomes back to the edge. The current execution limit is two simultaneous
+zones in the same schedule group; later groups wait for all zones in the
+current group to finish.
 
 ## Architecture Components
 
@@ -34,3 +38,15 @@ Firmware builds should use ESP-IDF's Ninja toolchain and Python environment. Avo
 - [Program and schedule audit (2026-07-29)](docs/PROGRAM-SCHEDULE-AUDIT-2026-07-29.md)
 - [Program and schedule implementation checklist (2026-07-29)](docs/PROGRAM-SCHEDULE-IMPLEMENTATION-CHECKLIST-2026-07-29.md)
 - [MQTT v2 program and schedule sync contract](docs/MQTT-V2-PROGRAM-SCHEDULE-SYNC-CONTRACT.md)
+- [OTA security and provisioning](docs/OTA-SECURITY-PROVISIONING.md)
+- [Operational logging](docs/OPERATIONAL-LOGGING.md)
+
+## Host Tests
+
+Configure host tests separately from ESP-IDF builds, then run the full suite:
+
+```sh
+cmake -S . -B build-host -DZIC_HOST_TESTS=ON
+cmake --build build-host
+ctest --test-dir build-host --output-on-failure
+```
