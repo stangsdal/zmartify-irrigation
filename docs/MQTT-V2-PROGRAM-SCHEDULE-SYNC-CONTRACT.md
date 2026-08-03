@@ -152,7 +152,7 @@ This is optional. The full-snapshot `replace` command is the preferred first imp
 
 `sort_order` is a run group, not a unique sequence position. All enabled zones
 with the same positive group value start together. The controller currently
-accepts at most two enabled zones per group; it rejects a payload that exceeds
+accepts at most three enabled zones per group; it rejects a payload that exceeds
 that limit. Groups execute in ascending numeric order, and a later group waits
 until the irrigation engine is idle.
 
@@ -264,7 +264,7 @@ The controller implementation must document and test these rules:
 6. Confirm manual run suppresses or defers overlapping scheduled execution according to precedence rules.
 7. Confirm reported-state exposes synchronized scheduler revision, next-run,
   and next-program state.
-8. Confirm two zones in the same group run together and each produces a
+8. Confirm up to three zones in the same group run together and each produces a
   lifecycle outcome.
 
 ## Recommended implementation order

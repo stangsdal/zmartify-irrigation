@@ -96,6 +96,7 @@ typedef enum {
     ZIC_V2_ACTION_RAIN_DELAY,
     ZIC_V2_ACTION_CONFIG_PROGRAMS_REPLACE,
     ZIC_V2_ACTION_CONFIG_PROGRAMS_CLEAR,
+    ZIC_V2_ACTION_CONFIG_SYSTEM_MODE,
     ZIC_V2_ACTION_CONFIG_NETWORK,
     ZIC_V2_ACTION_CONFIG_STORAGE_SD_CARD_INITIALIZE,
 } zic_v2_command_action_t;
@@ -167,7 +168,7 @@ bool zic_v2_build_reported_state(char *out,
  *
  * event_type examples: "run.completed", "valve.fault", "pressure.alarm".
  * severity: "info", "warning", "alarm" or "critical".
- * result/detail/run_id/program_id are optional (NULL to omit).
+ * result/detail/command_id/run_id/program_id are optional (NULL to omit).
  * zone_id <= 0 omits the field.
  */
 bool zic_v2_build_outcome(char *out,
@@ -177,6 +178,7 @@ bool zic_v2_build_outcome(char *out,
                           const char *severity,
                           const char *result,
                           const char *detail,
+                          const char *command_id,
                           const char *run_id,
                           const char *program_id,
                           int zone_id);

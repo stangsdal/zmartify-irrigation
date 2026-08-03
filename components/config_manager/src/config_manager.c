@@ -73,7 +73,7 @@ static void apply_factory_defaults(zic_config_t *cfg)
     cfg->system.controller_id          = 0x00000001;
     cfg->system.operational_mode       = CONFIG_MODE_AUTO;
     cfg->system.active_zone_count      = CONFIG_MAX_ZONES;
-    cfg->system.max_simultaneous_zones = 2;
+    cfg->system.max_simultaneous_zones = 3;
     cfg->system.global_max_runtime_s   = 3600;  /* 1 hour */
     cfg->system.master_valve_enabled   = true;
 

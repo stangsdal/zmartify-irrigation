@@ -14,7 +14,7 @@ typedef enum {
     IRRIGATION_PHASE_FAULT,
 } irrigation_phase_t;
 
-#define IRRIGATION_MAX_CONCURRENT_ZONES 2u
+#define IRRIGATION_MAX_CONCURRENT_ZONES 3u
 
 typedef struct {
     uint64_t deadline_ms;

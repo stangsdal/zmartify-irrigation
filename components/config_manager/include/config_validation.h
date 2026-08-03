@@ -14,6 +14,7 @@ bool config_migrate_v1(zic_config_t *config);
 bool config_migrate_v2(zic_config_t *config);
 bool config_migrate_v3(zic_config_t *config);
 bool config_migrate_v4(zic_config_t *config);
+bool config_migrate_v5(zic_config_t *config);
 bool config_migrate_to_current(zic_config_t *config);
 bool config_apply_zone_commissioning(config_zone_t *zone,
                                      uint16_t observed_flow_lpm_x10,

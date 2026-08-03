@@ -21,7 +21,7 @@
 
 /* ─── Schema & limits ────────────────────────────────────────────────── */
 
-#define CONFIG_SCHEMA_VERSION    5       /**< Increment on incompatible changes */
+#define CONFIG_SCHEMA_VERSION    6       /**< Increment on incompatible changes */
 #define CONFIG_MAGIC             0x5A49  /**< 'ZI' – used as header sanity check */
 
 #define CONFIG_MAX_ZONES         15      /**< Relays 1-15 are irrigation zones */

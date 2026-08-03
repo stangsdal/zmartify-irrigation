@@ -91,7 +91,7 @@ static void test_stop_preempts_master_delay(void)
     assert(irrigation_engine_is_idle(&engine));
 }
 
-static void test_two_zones_run_concurrently(void)
+static void test_three_zones_run_concurrently(void)
 {
     irrigation_engine_t engine;
     call_count = 0;
@@ -109,6 +109,14 @@ static void test_two_zones_run_concurrently(void)
     assert(engine.active_zone_id == 1);
     assert(engine.active_relay_index == 1);
     assert(irrigation_engine_remaining_seconds(&engine, 5000) == 57);
+
+    assert(irrigation_engine_start_zone(&engine, 3, 3, 30, 5000));
+    assert(call_count == 4);
+    assert(calls[3].call == CALL_ZONE_OPEN && calls[3].relay == 3);
+    assert(engine.active_zone_count == 3);
+
+    assert(!irrigation_engine_start_zone(&engine, 4, 4, 30, 5000));
+    assert(call_count == 4);
 
     for (size_t index = 0; index < call_count; ++index) {
         assert(calls[index].call != CALL_MASTER_CLOSE);
@@ -180,7 +188,7 @@ int main(void)
 {
     test_timed_relay_sequence();
     test_stop_preempts_master_delay();
-    test_two_zones_run_concurrently();
+    test_three_zones_run_concurrently();
     test_zone_deadlines_and_stop_are_independent();
     test_same_zone_start_refreshes_runtime();
     test_same_zone_refresh_cancels_master_close_delay();

@@ -199,6 +199,16 @@ bool config_migrate_v4(zic_config_t *config)
     return true;
 }
 
+bool config_migrate_v5(zic_config_t *config)
+{
+    if (config == NULL || config->schema_version != 5u) {
+        return false;
+    }
+    config->system.max_simultaneous_zones = 3u;
+    config->schema_version = 6u;
+    return true;
+}
+
 bool config_migrate_to_current(zic_config_t *config)
 {
     if (config == NULL) {
@@ -226,6 +236,9 @@ bool config_migrate_to_current(zic_config_t *config)
             break;
         case 4u:
             migrated = config_migrate_v4(candidate);
+            break;
+        case 5u:
+            migrated = config_migrate_v5(candidate);
             break;
         default:
             ok = false;

@@ -158,9 +158,12 @@ static void test_schema_v1_migration(void)
     assert(config_migrate_v3(&config));
     assert(config.schema_version == 4u);
     assert(config_migrate_v4(&config));
+    assert(config.schema_version == 5u);
+    assert(config_migrate_v5(&config));
     assert(config.schema_version == CONFIG_SCHEMA_VERSION);
     assert(config.programs[0].zone_group[0] == 1u);
     assert(config.programs[0].zone_group[1] == 2u);
+    assert(config.system.max_simultaneous_zones == 3u);
     assert(config_validate_safety(&config));
     assert(!config_migrate_v1(&config));
 }
@@ -178,7 +181,10 @@ static void test_schema_v2_migration(void)
     assert(config_migrate_v3(&config));
     assert(config.schema_version == 4u);
     assert(config_migrate_v4(&config));
+    assert(config.schema_version == 5u);
+    assert(config_migrate_v5(&config));
     assert(config.schema_version == CONFIG_SCHEMA_VERSION);
+    assert(config.system.max_simultaneous_zones == 3u);
     assert(config_validate_safety(&config));
     assert(!config_migrate_v2(&config));
 }
@@ -194,11 +200,14 @@ static void test_schema_v3_migration_enables_all_zones(void)
     assert(config_migrate_v3(&config));
     assert(config.schema_version == 4u);
     assert(config_migrate_v4(&config));
+    assert(config.schema_version == 5u);
+    assert(config_migrate_v5(&config));
     assert(config.schema_version == CONFIG_SCHEMA_VERSION);
     for (uint8_t index = 0; index < CONFIG_MAX_ZONES; ++index) {
         assert(config.zones[index].enabled);
         assert(config.programs[0].zone_group[index] == index + 1u);
     }
+    assert(config.system.max_simultaneous_zones == 3u);
     assert(config_validate_safety(&config));
     assert(!config_migrate_v3(&config));
 }

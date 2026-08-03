@@ -416,6 +416,7 @@ bool zic_v2_build_outcome(char *out,
                           const char *severity,
                           const char *result,
                           const char *detail,
+                          const char *command_id,
                           const char *run_id,
                           const char *program_id,
                           int zone_id)
@@ -439,6 +440,9 @@ bool zic_v2_build_outcome(char *out,
         return false;
     }
     if (detail != NULL && !zic_v2_appendf(out, out_len, &pos, ",\"detail\":\"%.96s\"", detail)) {
+        return false;
+    }
+    if (command_id != NULL && !zic_v2_appendf(out, out_len, &pos, ",\"command_id\":\"%s\"", command_id)) {
         return false;
     }
     if (run_id != NULL && !zic_v2_appendf(out, out_len, &pos, ",\"run_id\":\"%s\"", run_id)) {

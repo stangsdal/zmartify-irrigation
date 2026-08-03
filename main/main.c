@@ -122,6 +122,7 @@ typedef enum {
     ZIC_CMD_RELAY_SELF_TEST,
     ZIC_CMD_REPLACE_PROGRAMS_CONFIG,
     ZIC_CMD_CLEAR_PROGRAMS_CONFIG,
+    ZIC_CMD_UPDATE_SYSTEM_MODE,
     ZIC_CMD_UPDATE_NETWORK_CONFIG,
     ZIC_CMD_INITIALIZE_SD_CARD
 } zic_runtime_command_type_t;
@@ -143,6 +144,7 @@ typedef struct {
     char command_id[ZIC_V2_COMMAND_ID_MAX];
     char ota_url[160];
     zic_program_sync_snapshot_t program_sync;
+    config_op_mode_t system_mode;
     config_network_t network_config;
     bool sd_format_if_needed;
 } zic_runtime_command_t;
@@ -1849,7 +1851,7 @@ static bool zic_parse_v2_programs_replace(const cJSON *parameters,
                 }
                 return false;
             }
-            if (zone_seen[zone_index] || ++group_counts[sort_order - 1u] > 2u) {
+            if (zone_seen[zone_index] || ++group_counts[sort_order - 1u] > 3u) {
                 if (detail_out != NULL) {
                     *detail_out = "duplicate_zone_entry";
                 }
@@ -2208,6 +2210,28 @@ static void zic_mqtt_on_message(const char *topic,
             cmd->program_sync.program_count = 0u;
             cmd->program_sync.schedule_count = 0u;
             cmd->program_sync.timezone[0] = '\0';
+        } else if (strcmp(action, "config/system/mode") == 0) {
+            static const char *const fields[] = {"operational_mode"};
+            const cJSON *op_mode = cJSON_GetObjectItemCaseSensitive(parameters, "operational_mode");
+            v2_command.action = ZIC_V2_ACTION_CONFIG_SYSTEM_MODE;
+            schema_valid = schema_valid && zic_json_has_only(parameters, fields, 1u) &&
+                cJSON_IsString(op_mode) && op_mode->valuestring != NULL;
+            if (schema_valid) {
+                const char *mode = op_mode->valuestring;
+                if (strcmp(mode, "auto") == 0 || strcmp(mode, "automatic") == 0) {
+                    cmd->system_mode = CONFIG_MODE_AUTO;
+                } else if (strcmp(mode, "manual") == 0) {
+                    cmd->system_mode = CONFIG_MODE_MANUAL;
+                } else if (strcmp(mode, "off") == 0) {
+                    cmd->system_mode = CONFIG_MODE_OFF;
+                } else if (strcmp(mode, "service") == 0 || strcmp(mode, "diagnostics") == 0) {
+                    cmd->system_mode = CONFIG_MODE_SERVICE;
+                } else {
+                    schema_valid = false;
+                    schema_error_detail = "invalid_mode";
+                }
+            }
+            cmd->type = ZIC_CMD_UPDATE_SYSTEM_MODE;
         } else if (strcmp(action, "config/network") == 0) {
             static const char *const fields[] = {
                 "mqtt_broker_uri", "mqtt_uri", "mqtt_username", "mqtt_password",
@@ -2425,6 +2449,7 @@ static void zic_publish_v2_outcome(zic_app_context_t *ctx,
     zic_v2_now_iso(stamp, sizeof(stamp));
     if (!zic_v2_build_outcome(payload, sizeof(payload), stamp, event_type, severity, result, detail,
                               correlation_id,
+                              correlation_id,
                               NULL, zone_id)) {
         return;
     }
@@ -2435,7 +2460,8 @@ static void zic_publish_v2_outcome(zic_app_context_t *ctx,
 
 static bool zic_runtime_start_zone(zic_app_context_t *ctx,
                                    uint8_t zone_id,
-                                   uint32_t requested_runtime_seconds)
+                                   uint32_t requested_runtime_seconds,
+                                   const char *correlation_id)
 {
     ota_state_t ota_state = ota_manager_get_state();
     if (ctx == NULL || !ctx->relay_available) {
@@ -2493,7 +2519,7 @@ static bool zic_runtime_start_zone(zic_app_context_t *ctx,
     }
     storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
                            ZIC_LOG_IRRIGATION, "zone started");
-    zic_publish_v2_outcome(ctx, NULL, "zone.started", "info", "completed", NULL, zone_id);
+    zic_publish_v2_outcome(ctx, correlation_id, "zone.started", "info", "completed", NULL, zone_id);
     return true;
 }
 
@@ -2572,7 +2598,7 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
         }
         bool was_running = irrigation_engine_is_running(&ctx->engine);
         bool same_zone = was_running && ctx->engine.active_zone_id == cmd->zone_id;
-        if (zic_runtime_start_zone(ctx, cmd->zone_id, cmd->runtime_seconds)) {
+        if (zic_runtime_start_zone(ctx, cmd->zone_id, cmd->runtime_seconds, cmd->command_id)) {
             if (!same_zone) {
                 (void)snprintf(ctx->active_zone_command_id,
                                sizeof(ctx->active_zone_command_id),
@@ -2757,6 +2783,43 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
                  (unsigned long)cmd->program_sync.config_revision);
         zic_publish_v2_outcome(ctx, cmd->command_id, "config.programs.cleared", "info",
                                "completed", detail, 0);
+        break;
+    }
+    case ZIC_CMD_UPDATE_SYSTEM_MODE: {
+        config_system_t system;
+        const char *detail = NULL;
+        if (config_get_system(&system) != CFG_OK) {
+            zic_publish_v2_outcome(ctx, cmd->command_id, "config.mode.rejected", "warning",
+                                   "rejected", "config_load_failed", 0);
+            break;
+        }
+        system.operational_mode = cmd->system_mode;
+        if (config_set_system(&system) == CFG_OK && config_manager_commit() == CFG_OK) {
+            switch (cmd->system_mode) {
+            case CONFIG_MODE_AUTO:
+                detail = "auto";
+                break;
+            case CONFIG_MODE_MANUAL:
+                detail = "manual";
+                break;
+            case CONFIG_MODE_OFF:
+                detail = "off";
+                break;
+            case CONFIG_MODE_SERVICE:
+                detail = "service";
+                break;
+            default:
+                detail = "unknown";
+                break;
+            }
+            storage_manager_append(&ctx->storage_manager, zic_log_timestamp(),
+                                   ZIC_LOG_AUDIT, "controller mode updated by command");
+            zic_publish_v2_outcome(ctx, cmd->command_id, "config.mode.updated", "info",
+                                   "completed", detail, 0);
+        } else {
+            zic_publish_v2_outcome(ctx, cmd->command_id, "config.mode.rejected", "warning",
+                                   "rejected", "config_save_failed", 0);
+        }
         break;
     }
     case ZIC_CMD_UPDATE_NETWORK_CONFIG:
@@ -2954,7 +3017,13 @@ static void zic_scheduler_advance_program(zic_app_context_t *ctx)
                 continue;
             }
             if (started_count >= IRRIGATION_MAX_CONCURRENT_ZONES ||
-                !zic_runtime_start_zone(ctx, zone_index + 1u, runtime_seconds)) {
+                !zic_runtime_start_zone(
+                    ctx,
+                    zone_index + 1u,
+                    runtime_seconds,
+                    ctx->scheduled_program_command_id[0] != '\0'
+                        ? ctx->scheduled_program_command_id
+                        : NULL)) {
                 group_failed = true;
                 break;
             }
@@ -3037,7 +3106,13 @@ static void zic_control_task(void *arg)
             if (!still_active && active_zone_ids[index] != 0u) {
                 storage_manager_append(&s_ctx.storage_manager, zic_log_timestamp(),
                                        ZIC_LOG_IRRIGATION, "zone completed");
-                zic_publish_v2_outcome(&s_ctx, NULL, "zone.stopped", "info", "completed", NULL,
+                const char *zone_stop_correlation = NULL;
+                if (s_ctx.active_zone_command_id[0] != '\0') {
+                    zone_stop_correlation = s_ctx.active_zone_command_id;
+                } else if (s_ctx.scheduled_program_command_id[0] != '\0') {
+                    zone_stop_correlation = s_ctx.scheduled_program_command_id;
+                }
+                zic_publish_v2_outcome(&s_ctx, zone_stop_correlation, "zone.stopped", "info", "completed", NULL,
                                        active_zone_ids[index]);
             }
         }
