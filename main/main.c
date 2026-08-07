@@ -105,6 +105,7 @@ static zic_log_entry_t s_log_buffer[ZIC_LOG_PERSIST_CAPACITY];
 #define ZIC_HTTP_AUTH_FAILURE_WINDOW_US (60LL * 1000LL * 1000LL)
 #define ZIC_OTA_UPLOAD_IDLE_TIMEOUT_US (30LL * 1000LL * 1000LL)
 #define ZIC_MQTT_STALE_RECOVERY_MS 30000u
+#define ZIC_OTA_PULL_INTERVAL_MS (300u * 1000u)
 
 /* Device identity for Zmartify v2 topics; must match the edge registry
  * device_id assigned during onboarding (lowercase, hyphenated). */
@@ -124,7 +125,9 @@ typedef enum {
     ZIC_CMD_CLEAR_PROGRAMS_CONFIG,
     ZIC_CMD_UPDATE_SYSTEM_MODE,
     ZIC_CMD_UPDATE_NETWORK_CONFIG,
-    ZIC_CMD_INITIALIZE_SD_CARD
+    ZIC_CMD_INITIALIZE_SD_CARD,
+    ZIC_CMD_CONFIGURE_PULL_OTA,
+    ZIC_CMD_CHECK_PULL_OTA
 } zic_runtime_command_type_t;
 
 typedef struct {
@@ -146,6 +149,8 @@ typedef struct {
     zic_program_sync_snapshot_t program_sync;
     config_op_mode_t system_mode;
     config_network_t network_config;
+    char ota_edge_url[OTA_MANAGER_EDGE_URL_MAX];
+    char ota_device_token[OTA_MANAGER_DEVICE_TOKEN_MAX];
     bool sd_format_if_needed;
 } zic_runtime_command_t;
 
@@ -193,6 +198,7 @@ static watersensor_client_t s_watersensor;
 static TaskHandle_t s_control_task_handle;
 static TaskHandle_t s_telemetry_task_handle;
 static TaskHandle_t s_watersensor_task_handle;
+static volatile bool s_ota_pull_check_requested;
 
 static const char *s_command_topics[] = {
     "zmartify/v2/devices/" ZIC_V2_DEVICE_ID "/commands/irrigation/#",
@@ -2265,6 +2271,17 @@ static void zic_mqtt_on_message(const char *topic,
             }
             cmd->type = ZIC_CMD_UPDATE_NETWORK_CONFIG;
             cmd->network_config = network;
+        } else if (strcmp(action, "ota/config") == 0) {
+            static const char *const fields[] = {"edge_url", "device_token"};
+            v2_command.action = ZIC_V2_ACTION_CONFIG_NETWORK;
+            schema_valid = schema_valid && zic_json_has_only(parameters, fields, 2u) &&
+                zic_json_copy_string(parameters, "edge_url", cmd->ota_edge_url, sizeof(cmd->ota_edge_url)) &&
+                zic_json_copy_string(parameters, "device_token", cmd->ota_device_token, sizeof(cmd->ota_device_token));
+            cmd->type = ZIC_CMD_CONFIGURE_PULL_OTA;
+        } else if (strcmp(action, "ota/check") == 0) {
+            v2_command.action = ZIC_V2_ACTION_CONFIG_NETWORK;
+            schema_valid = schema_valid && zic_json_has_only(parameters, NULL, 0u);
+            cmd->type = ZIC_CMD_CHECK_PULL_OTA;
         } else if (strcmp(action, "config/storage/sd-card/initialize") == 0) {
             static const char *const fields[] = {"format"};
             v2_command.action = ZIC_V2_ACTION_CONFIG_STORAGE_SD_CARD_INITIALIZE;
@@ -2865,6 +2882,18 @@ static void zic_runtime_apply_command(zic_app_context_t *ctx, const zic_runtime_
         }
         break;
     }
+    case ZIC_CMD_CONFIGURE_PULL_OTA:
+        if (ota_manager_configure_edge(cmd->ota_edge_url, cmd->ota_device_token)) {
+            s_ota_pull_check_requested = true;
+            zic_publish_v2_outcome(ctx, cmd->command_id, "ota.configured", "info", "completed", NULL, 0);
+        } else {
+            zic_publish_v2_outcome(ctx, cmd->command_id, "ota.configured", "warning", "rejected", "invalid_config", 0);
+        }
+        break;
+    case ZIC_CMD_CHECK_PULL_OTA:
+        s_ota_pull_check_requested = true;
+        zic_publish_v2_outcome(ctx, cmd->command_id, "ota.check", "info", "accepted", NULL, 0);
+        break;
     case ZIC_CMD_RELAY_SELF_TEST:
         if (!ctx->relay_available) {
             zic_publish_v2_outcome(ctx, cmd->command_id, "relay.self_test", "warning",
@@ -3299,6 +3328,34 @@ static void zic_watersensor_task(void *arg)
             xSemaphoreGive(s_watersensor_lock);
         }
         vTaskDelay(pdMS_TO_TICKS(delay_ms));
+    }
+}
+
+static void zic_pull_ota_task(void *arg)
+{
+    (void)arg;
+    uint32_t elapsed_ms = ZIC_OTA_PULL_INTERVAL_MS;
+    xEventGroupWaitBits(s_runtime_events, ZIC_EVENT_ENGINE_READY, pdFALSE, pdTRUE, portMAX_DELAY);
+    for (;;) {
+        bool requested = s_ota_pull_check_requested;
+        bool due = elapsed_ms >= ZIC_OTA_PULL_INTERVAL_MS;
+        bool idle = false;
+        if ((requested || due) && mqtt_transport_is_connected(&s_ctx.mqtt_transport) &&
+            xSemaphoreTake(s_ctx_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
+            idle = irrigation_engine_is_idle(&s_ctx.engine) && !s_ctx.scheduled_program_active;
+            xSemaphoreGive(s_ctx_lock);
+        }
+        if ((requested || due) && idle) {
+            s_ota_pull_check_requested = false;
+            elapsed_ms = 0;
+            const esp_app_desc_t *app_desc = esp_app_get_description();
+            if (ota_manager_pull_from_edge(ZIC_V2_DEVICE_ID, app_desc != NULL ? app_desc->version : ZIC_FW_VERSION_STR)) {
+                ESP_LOGI(TAG, "Pull OTA verified; restarting into staged image");
+                esp_restart();
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        elapsed_ms += 5000u;
     }
 }
 
@@ -3737,4 +3794,5 @@ void app_main(void)
                 ZIC_CTRL_TASK_PRIO, &s_control_task_handle);
     xTaskCreate(zic_telemetry_task, "zic_telem", ZIC_TELEM_TASK_STACK, NULL,
                 ZIC_TELEM_TASK_PRIO, &s_telemetry_task_handle);
+    xTaskCreate(zic_pull_ota_task, "ota_pull", ZIC_OTA_TASK_STACK, NULL, 4, NULL);
 }
