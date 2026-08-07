@@ -12,6 +12,7 @@
 #include "nvs_flash.h"
 #include "driver/sdmmc_host.h"
 #include "sdmmc_cmd.h"
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include "cJSON.h"
@@ -106,6 +107,7 @@ static zic_log_entry_t s_log_buffer[ZIC_LOG_PERSIST_CAPACITY];
 #define ZIC_OTA_UPLOAD_IDLE_TIMEOUT_US (30LL * 1000LL * 1000LL)
 #define ZIC_MQTT_STALE_RECOVERY_MS 30000u
 #define ZIC_OTA_PULL_INTERVAL_MS (300u * 1000u)
+#define ZIC_RUNTIME_LOG_CAPACITY 8192u
 
 /* Device identity for Zmartify v2 topics; must match the edge registry
  * device_id assigned during onboarding (lowercase, hyphenated). */
@@ -218,6 +220,11 @@ static char s_sd_card_last_error[96] = "not initialized";
 static uint32_t s_http_auth_failures;
 static int64_t s_http_auth_window_start_us;
 static volatile uint32_t s_wifi_last_disconnect_reason;
+static char s_runtime_log[ZIC_RUNTIME_LOG_CAPACITY];
+static size_t s_runtime_log_write_offset;
+static bool s_runtime_log_wrapped;
+static portMUX_TYPE s_runtime_log_lock = portMUX_INITIALIZER_UNLOCKED;
+static vprintf_like_t s_runtime_log_vprintf;
 
 static void zic_publish_v2_outcome(zic_app_context_t *ctx,
                                    const char *correlation_id,
@@ -226,6 +233,51 @@ static void zic_publish_v2_outcome(zic_app_context_t *ctx,
                                    const char *result,
                                    const char *detail,
                                    int zone_id);
+
+static int zic_runtime_log_vprintf(const char *format, va_list arguments)
+{
+    va_list capture_arguments;
+    va_copy(capture_arguments, arguments);
+    char line[256];
+    int length = vsnprintf(line, sizeof(line), format, capture_arguments);
+    va_end(capture_arguments);
+
+    if (length > 0) {
+        size_t copy_length = (size_t)length;
+        if (copy_length >= sizeof(line)) {
+            copy_length = sizeof(line) - 1u;
+        }
+        portENTER_CRITICAL(&s_runtime_log_lock);
+        for (size_t index = 0; index < copy_length; ++index) {
+            s_runtime_log[s_runtime_log_write_offset++] = line[index];
+            if (s_runtime_log_write_offset == sizeof(s_runtime_log)) {
+                s_runtime_log_write_offset = 0u;
+                s_runtime_log_wrapped = true;
+            }
+        }
+        portEXIT_CRITICAL(&s_runtime_log_lock);
+    }
+    return s_runtime_log_vprintf != NULL ? s_runtime_log_vprintf(format, arguments) : length;
+}
+
+static void zic_runtime_log_snapshot(char *out, size_t out_size)
+{
+    if (out == NULL || out_size == 0u) {
+        return;
+    }
+    portENTER_CRITICAL(&s_runtime_log_lock);
+    size_t output_length = 0u;
+    if (s_runtime_log_wrapped) {
+        for (size_t index = s_runtime_log_write_offset; index < sizeof(s_runtime_log) && output_length + 1u < out_size; ++index) {
+            out[output_length++] = s_runtime_log[index];
+        }
+    }
+    for (size_t index = 0u; index < s_runtime_log_write_offset && output_length + 1u < out_size; ++index) {
+        out[output_length++] = s_runtime_log[index];
+    }
+    out[output_length] = '\0';
+    portEXIT_CRITICAL(&s_runtime_log_lock);
+}
 
 static bool zic_enqueue_command(zic_runtime_command_t *cmd)
 {
@@ -906,6 +958,17 @@ static esp_err_t zic_sd_card_status_http_handler(httpd_req_t *request)
     return result;
 }
 
+static esp_err_t zic_runtime_logs_http_handler(httpd_req_t *request)
+{
+    if (zic_http_require_admin(request) != ESP_OK) {
+        return ESP_FAIL;
+    }
+    char snapshot[ZIC_RUNTIME_LOG_CAPACITY + 1u];
+    zic_runtime_log_snapshot(snapshot, sizeof(snapshot));
+    httpd_resp_set_type(request, "text/plain; charset=utf-8");
+    return httpd_resp_send(request, snapshot, HTTPD_RESP_USE_STRLEN);
+}
+
 static bool zic_json_copy_string(const cJSON *root, const char *key, char *out, size_t out_len)
 {
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, key);
@@ -1163,6 +1226,19 @@ static bool zic_ota_http_start(void)
         return false;
     }
 
+    const httpd_uri_t runtime_logs_uri = {
+        .uri = "/logs/runtime",
+        .method = HTTP_GET,
+        .handler = zic_runtime_logs_http_handler,
+    };
+    err = httpd_register_uri_handler(s_ota_http_server, &runtime_logs_uri);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Runtime log endpoint registration failed: %s", esp_err_to_name(err));
+        httpd_stop(s_ota_http_server);
+        s_ota_http_server = NULL;
+        return false;
+    }
+
     const httpd_uri_t health_uri = {
         .uri = "/health",
         .method = HTTP_GET,
@@ -1228,7 +1304,7 @@ static bool zic_ota_http_start(void)
         return false;
     }
 
-    ESP_LOGI(TAG, "HTTP services ready: POST /ota, POST /reboot, GET /logs, GET /health, GET /storage/sd-card, GET/POST /config/network, POST /weather");
+    ESP_LOGI(TAG, "HTTP services ready: POST /ota, POST /reboot, GET /logs, GET /logs/runtime, GET /health, GET /storage/sd-card, GET/POST /config/network, POST /weather");
     return true;
 }
 
@@ -3674,6 +3750,7 @@ void app_main(void)
 {
     hmi_board_status_t hmi_status = {0};
 
+    s_runtime_log_vprintf = esp_log_set_vprintf(zic_runtime_log_vprintf);
     ESP_LOGI(TAG, "Zmartify Irrigation Controller booting");
     ota_manager_init();
 #if ZIC_OTA_FORCE_HEALTH_FAILURE
