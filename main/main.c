@@ -1181,6 +1181,7 @@ static bool zic_ota_http_start(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size = ZIC_OTA_TASK_STACK;
+    config.max_uri_handlers = 9u;
     esp_err_t err = httpd_start(&s_ota_http_server, &config);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Direct OTA HTTP server failed: %s", esp_err_to_name(err));
